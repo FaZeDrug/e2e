@@ -14,6 +14,7 @@ import { SESSION_CONTROLS } from '../engine/manifest.ts';
 import { classifyError, ConfigurationError, E2EError, InfrastructureError, serializeError, TestError } from '../internal/errors.ts';
 import { rejectUnknownKeys, rejectUnknownOptions } from '../internal/options.ts';
 import { MAX_TIMER_MS } from '../internal/time.ts';
+import { CORE_FIXTURES } from '../run/fixtures.ts';
 import { redactOpening } from '../run/redact-opening.ts';
 import { processSecrets, registerStaticSecrets, sessionLedger } from '../run/secrecy.ts';
 import { targetIdentity } from '../run/sessions.ts';
@@ -122,8 +123,11 @@ const LAUNCH_APP_KEYS = ['url', 'bundleId', 'appPath', 'linkBase', 'identity', '
 const SESSION_OPTION_KEYS = ['state', 'signal'] as const;
 /** The finished steps a session keeps, what its agent reads as the steps before its own; a bot's session runs for days. */
 const RETAINED_STEPS = 500;
-/** The fixtures every session exposes; the engine's own join them. */
-const CORE_FIXTURES = ['screen', 'app', 'platform'] as const;
+/**
+ * The fixtures every session exposes; the engine's own join them. A session
+ * has no test, so these are the core fixtures that do not belong to one.
+ */
+const SESSION_FIXTURES = Object.entries(CORE_FIXTURES).flatMap(([name, fixture]) => (fixture.scope === 'test' ? [] : [name]));
 
 /**
  * Launches `engine`: prepares it (a first-run browser download, a device
@@ -295,7 +299,7 @@ function coreSession<Fixtures extends object>(
   } satisfies Record<(typeof SESSION_CONTROLS)[number] | typeof Symbol.asyncDispose, unknown>;
   // Built property by property: the fixtures are accessors, each acquired on first touch, and their names come from the engine.
   const session = {} as Session<Fixtures>;
-  for (const name of [...CORE_FIXTURES, ...Object.keys(target.engine?.fixtures ?? {})]) {
+  for (const name of [...SESSION_FIXTURES, ...Object.keys(target.engine?.fixtures ?? {})]) {
     Object.defineProperty(session, name, { enumerable: true, get: () => Reflect.get(fixtures, name) as unknown });
   }
   Object.defineProperties(session, Object.getOwnPropertyDescriptors(controls));

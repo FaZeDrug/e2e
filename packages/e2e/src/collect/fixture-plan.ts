@@ -7,7 +7,7 @@
  */
 
 import type { EngineIsolation } from '@e2e-dev/core/lib/engine/index';
-import { unknownFixtureMessage } from '@e2e-dev/core/lib/run/fixtures';
+import { CORE_FIXTURES, unknownFixtureMessage } from '@e2e-dev/core/lib/run/fixtures';
 import type { FixtureScope } from '@e2e-dev/core/lib/types';
 import type { SourceLocation } from '@e2e-dev/core/lib/internal/source';
 import { fixtureNames, FixtureUseError, type FixtureUserFn } from './fixture-names.ts';
@@ -26,24 +26,29 @@ export interface FixtureTarget {
     | undefined;
 }
 
-/** Built-in fixtures every target has, beside the ones its engine contributes. */
-const CORE_FIXTURES = ['agent', 'app', 'screen', 'platform', 'session'] as const;
+/**
+ * The scope a built-in fixture has on every target, or undefined when it
+ * follows the engine: core declares it for the core fixtures (`platform`
+ * never changes, `agent` and `session` belong to one attempt), and an
+ * engine's own fixtures always follow the engine.
+ */
+function fixedScope(name: string): FixtureScope | undefined {
+  const scope = Object.hasOwn(CORE_FIXTURES, name) ? CORE_FIXTURES[name as keyof typeof CORE_FIXTURES].scope : 'engine';
+  return scope === 'engine' ? undefined : scope;
+}
 
 /**
- * The scope of a built-in fixture on `target`. `platform` never changes and
- * `agent` and `session` belong to one attempt everywhere; the engine's
- * fixtures, `app`, and `screen` live as long as the state behind them, which
- * the engine declares (`isolation`).
+ * The scope of a built-in fixture on `target`: its fixed one, or, for `app`,
+ * `screen`, and the engine's fixtures, as long as the state behind them
+ * lives, which the engine declares (`isolation`).
  */
 export function builtInScope(target: FixtureTarget, name: string): FixtureScope {
-  if (name === 'platform') return 'worker';
-  if (name === 'agent' || name === 'session') return 'test';
-  return target.engine?.isolation === 'worker' ? 'worker' : 'test';
+  return fixedScope(name) ?? (target.engine?.isolation === 'worker' ? 'worker' : 'test');
 }
 
 /** Every built-in fixture name on `target`: the core ones, then the engine's. */
 export function builtInNames(target: FixtureTarget): readonly string[] {
-  return [...CORE_FIXTURES, ...Object.keys(target.engine?.fixtures ?? {})];
+  return [...Object.keys(CORE_FIXTURES), ...Object.keys(target.engine?.fixtures ?? {})];
 }
 
 /** One function that receives fixtures, and how an error names it. */
@@ -120,7 +125,7 @@ class Planner {
     if (definition !== undefined) fixtureScope = definition.scope;
     else if (target === undefined) {
       // Before a target is known, a name the chain lacks may be an engine's, and `app` and `screen` have the engine's scope.
-      fixtureScope = name === 'platform' ? 'worker' : name === 'agent' || name === 'session' ? 'test' : undefined;
+      fixtureScope = fixedScope(name);
     } else if (builtInNames(target).includes(name)) fixtureScope = builtInScope(target, name);
     else if (declared !== undefined) {
       throw new FixtureUseError(

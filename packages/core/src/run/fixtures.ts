@@ -31,7 +31,7 @@ import {
 } from '../locator/screen.ts';
 import { engineAppInfo, joinLink, refusesLink } from '../config/app.ts';
 import type { ResolvedAgentConfig, ResolvedConfig, ResolvedTarget } from '../config/resolve.ts';
-import type { Agent, App, CommandConfig, Expectable, RecordingOptions, SetupSession, TestFixtures } from '../types.ts';
+import type { App, CommandConfig, Expectable, RecordingOptions, SetupSession, TestFixtures } from '../types.ts';
 import type { StepRecord, StepRecorder } from './steps.ts';
 
 export interface ArtifactSink {
@@ -178,10 +178,6 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
         }),
   });
   const { engine } = screenContext;
-  const screen = createScreen(screenContext);
-  const app = createApp(environment, engine);
-
-  let agent: Agent | undefined;
 
   /**
    * The agents this attempt can run with, resolved once each: the test's pin
@@ -250,18 +246,57 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
     ...(environment.debug !== undefined ? { debug: environment.debug } : {}),
   };
 
-  const fixtures: TestFixtures & { session: SetupSession } = {
-    get agent(): Agent {
-      if (agent !== undefined) return agent;
-      // The attempt's own agent is checked as the fixture is acquired, as before.
-      select(undefined);
-      agent = createAgentFixture(agentRuntime);
-      return agent;
+  const context: CoreFixtureContext = { environment, engine, screenContext, agentRuntime };
+  const factories: Record<string, () => unknown> = {};
+  for (const [name, fixture] of Object.entries(CORE_FIXTURES)) factories[name] = () => fixture.create(context);
+  Object.assign(factories, contributedFactories(environment, engine, screenContext));
+  // Accessors: a fixture is built on first touch, whether or not the test body reaches it, and kept.
+  const fixtures = {} as AttemptFixtures['fixtures'];
+  for (const [name, create] of Object.entries(factories)) {
+    Object.defineProperty(fixtures, name, { enumerable: true, get: lazily(create) });
+  }
+
+  return { fixtures: gateUnknownFixtures(fixtures, environment), agentRuntime };
+}
+
+/**
+ * How long a core fixture lives: one test attempt, the worker, or, for
+ * `engine`, as long as the state behind the engine's own fixtures, which the
+ * engine declares (`isolation`).
+ */
+type CoreFixtureScope = 'test' | 'worker' | 'engine';
+
+/** What a core fixture is built from: the attempt, and the parts its fixtures share. */
+interface CoreFixtureContext {
+  readonly environment: AttemptEnvironment;
+  readonly engine: LocatorEngine;
+  readonly screenContext: ScreenContext;
+  readonly agentRuntime: AgentContext;
+}
+
+type CoreFixtureValues = AttemptFixtures['fixtures'];
+
+/**
+ * The fixtures every attempt has, whatever its engine: each one's name, its
+ * scope, and how it is built. `createFixtures` builds them through this
+ * table, beside the engine's own (`Engine.fixtures`), and the runner's
+ * fixture pool reads the names and scopes from it.
+ */
+export const CORE_FIXTURES: { readonly [Name in keyof CoreFixtureValues]: { readonly scope: CoreFixtureScope; create(context: CoreFixtureContext): CoreFixtureValues[Name] } } = {
+  agent: {
+    scope: 'test',
+    create({ agentRuntime }) {
+      // The attempt's own agent is checked as the fixture is acquired.
+      agentRuntime.select(undefined);
+      return createAgentFixture(agentRuntime);
     },
-    app,
-    screen,
-    platform: environment.target.platform,
-    session: {
+  },
+  app: { scope: 'engine', create: ({ environment, engine }) => createApp(environment, engine) },
+  screen: { scope: 'engine', create: ({ screenContext }) => createScreen(screenContext) },
+  platform: { scope: 'worker', create: ({ environment }) => environment.target.platform },
+  session: {
+    scope: 'test',
+    create: ({ environment }) => ({
       save: async (name: string) => {
         const saveSession = environment.saveSession;
         if (saveSession === undefined) {
@@ -272,17 +307,9 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
         }
         await environment.steps.run('session', 'session.save', name, () => saveSession(name));
       },
-    },
-  };
-  // Defined as accessors, not spread: spreading would invoke every factory
-  // eagerly, before the test body and whether or not it touches the fixture.
-  Object.defineProperties(
-    fixtures,
-    Object.getOwnPropertyDescriptors(contributedFixtures(environment, engine, screenContext)),
-  );
-
-  return { fixtures: gateUnknownFixtures(fixtures, environment), agentRuntime };
-}
+    }),
+  },
+};
 
 /** Keys a test body may probe without meaning a fixture. */
 const PROBED_KEYS = new Set(['then', 'constructor', 'toJSON', 'toString', 'valueOf', 'inspect']);
@@ -334,32 +361,23 @@ function gateUnknownFixtures<T extends object>(fixtures: T, environment: Attempt
 }
 
 /**
- * Engine-contributed fixtures: factories declare operation metadata
- * through context.fixture and must return the surface they declared. Factories
- * stay lazy and each instance belongs to one test's fixture graph; the
- * session's ledger outlives that graph.
+ * Engine-contributed fixtures, as factories: an engine's factory declares
+ * operation metadata through context.fixture and must return the surface it
+ * declared. Each instance belongs to one test's fixture graph; the session's
+ * ledger outlives that graph.
  */
-function contributedFixtures(
+function contributedFactories(
   environment: AttemptEnvironment,
   engine: LocatorEngine,
   screenContext: ScreenContext,
-): Record<string, unknown> {
+): Record<string, () => unknown> {
   const declared = environment.target.engine?.fixtures;
   if (declared === undefined) return {};
-  const contributed: Record<string, unknown> = {};
   const recorder = new FixtureRecorder(environment, () => engine.actionTimeout);
   const context = fixtureContext(environment, engine, screenContext, recorder);
-  for (const [name, factory] of Object.entries(declared)) {
-    let instance: object | undefined;
-    Object.defineProperty(contributed, name, {
-      enumerable: true,
-      get() {
-        instance ??= recorder.require(name, factory(context));
-        return instance;
-      },
-    });
-  }
-  return contributed;
+  return Object.fromEntries(
+    Object.entries(declared).map(([name, factory]) => [name, () => recorder.require(name, factory(context))]),
+  );
 }
 
 function fixtureContext(

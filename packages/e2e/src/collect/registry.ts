@@ -14,6 +14,7 @@ import { markRunningTestExpectedToFail } from '@e2e-dev/core/lib/internal/expect
 import { parseModifierCall, skipRunningTest } from '../internal/skip.ts';
 import { unknownKeyMessage } from '@e2e-dev/core/lib/internal/options';
 import type { SourceLocation } from '@e2e-dev/core/lib/internal/source';
+import { CORE_FIXTURES } from '@e2e-dev/core/lib/run/fixtures';
 import { fixtureNames } from './fixture-names.ts';
 import { checkDeclaredFixtures } from './fixture-plan.ts';
 import type {
@@ -620,9 +621,6 @@ function normalizeArgs(
   return { options: optionsOrFn, fn: maybeFn };
 }
 
-/** Fixtures every attempt has without any engine or `test.extend()` defining them. */
-const CORE_FIXTURE_NAMES: ReadonlySet<string> = new Set(['agent', 'app', 'screen', 'platform', 'session']);
-
 /**
  * Checks one `test.extend()` argument against the chain it extends. Names
  * and what each function names are validated here, at import time, so a
@@ -652,7 +650,7 @@ function validateFixtureDefinitions(
   const source = captureSource(undefined);
   for (const [name, fn] of Object.entries(definitions)) {
     if (name === '') throw new CollectionError('test.extend(): a fixture name must not be empty');
-    if (CORE_FIXTURE_NAMES.has(name)) {
+    if (Object.hasOwn(CORE_FIXTURES, name)) {
       throw new CollectionError(
         `test.extend(): "${name}" is a core fixture and cannot be redefined`,
       );
