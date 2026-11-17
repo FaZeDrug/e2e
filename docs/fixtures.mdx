@@ -96,6 +96,25 @@ export const test = base.extend<{ cleanData: void }>({
 
 With `{ scope: 'worker', auto: true }` it runs one time per worker.
 
+## Extend a built-in fixture
+
+Give a fixture the name of a built-in fixture, such as `app` or `device`, to
+run code around it. Inside the function the name is the built-in. Tests and
+hooks that name it get the value you pass to `use`:
+
+```ts title="tests/fixtures.ts"
+export const test = base.extend({
+  device: async ({ device }, use) => {
+    await device.setPermission('camera', 'deny');
+    await use(device);
+  },
+});
+```
+
+The fixture keeps the scope of the built-in. On a mobile target `device` is a
+worker fixture, so this one runs one time per worker and `beforeAll` gets it.
+See [Extending a fixture](/reference/test#extending-a-fixture).
+
 ## Share a fixture across a worker
 
 A worker fixture is set up one time per worker and target, by the first test

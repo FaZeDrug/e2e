@@ -742,11 +742,11 @@ checked against that target's fixtures.
 
 | Mistake | Fails |
 | --- | --- |
-| A value that is not a plain object of functions or `[fn, { scope, auto }]` pairs, a scope other than `'test'` or `'worker'`, an `auto` that is not a boolean, an option other than `scope` and `auto`, an empty name, a core name (`agent`, `app`, `screen`, `platform`, `session`), or a name an earlier `extend` in the chain defined | At import, `COLLECTION_ERROR` naming the fixture |
+| A value that is not a plain object of functions or `[fn, { scope, auto }]` pairs, a scope other than `'test'` or `'worker'`, an `auto` that is not a boolean, an option other than `scope` and `auto`, or an empty name | At import, `COLLECTION_ERROR` naming the fixture |
 | A function that does not destructure its first parameter, or takes a rest or computed property there | At import, `COLLECTION_ERROR` naming the fixture |
 | Fixtures that name each other in a cycle | At import, `COLLECTION_ERROR` naming the cycle |
 | A name the target has no fixture for, in a test that runs there, its hooks, or a fixture they need | At collection, `COLLECTION_ERROR` |
-| A fixture named like one the target's engine contributes (`browser` on a Playwright target), in the chain of a test that runs there | At collection, `COLLECTION_ERROR` |
+| A `scope` that differs from the scope of the [fixture it extends](#extending-a-fixture) | At import when that scope is the same on every engine, else at collection, `COLLECTION_ERROR` naming both |
 | A fixture that names one a later `extend` declares | At collection, `COLLECTION_ERROR` |
 | A definition that returns without calling `use` | The attempt, in `beforeEach`, `TEST_SETUP_FAILED` |
 | A definition that calls `use` twice | The attempt, at teardown, `TEST_SETUP_FAILED` |
@@ -799,6 +799,37 @@ export const test = base.extend<{}, { database: Database }>({
   stays set up until the worker ends.
   Declare worker fixtures in a module the file imports.
 - `extend({ ... })` without type arguments infers test fixtures only.
+
+#### Extending a fixture
+
+A definition named like a fixture the `test` already has extends that fixture.
+It can be a built-in fixture (`agent`, `app`, `screen`, `platform`, `session`,
+`browser`, `device`) or a fixture of an earlier `extend`.
+
+```ts
+export const test = base.extend({
+  app: async ({ app }, use) => {
+    await app.open('/dashboard');
+    await use(app); // tests, hooks, and other fixtures get this value
+  },
+});
+```
+
+- Inside the function, its own name is the fixture it extends: the built-in,
+  or the earlier fixture of that name. A function that does not name itself
+  replaces the fixture.
+- Tests, hooks, and other fixtures that name the fixture get the value passed
+  to `use`. What the runner does with a built-in fixture does not change.
+- It is set up on demand, for code that names the fixture.
+- It keeps the scope of the fixture it extends on the target. `device` is a
+  worker fixture, so its override runs one time per worker and `beforeAll`
+  gets it. `app` is a test fixture on a web target and a worker fixture on a
+  mobile target. A `scope` in the options must be that scope.
+- It keeps the type. Define it with no type argument: the type arguments of
+  `extend` are for new fixtures.
+- On a target that has no fixture of that name, nothing fails until code that
+  runs there names it. Then the run fails at collection: the target has no
+  such fixture.
 
 ## Types
 
@@ -871,6 +902,21 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *   export const test = base.extend<{ device: Device }>();
    */
   extend<Extra = {}, ExtraWorker = {}>(): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
+  /**
+   * Returns a new `test` whose registrations extend fixtures it already
+   * has, built-in ones included. Inside the function the fixture's own name
+   * is the fixture it extends; the value it hands to `use` is what tests,
+   * hooks, and other fixtures receive under that name. It keeps the type and
+   * the scope of the fixture it extends:
+   *
+   *   export const test = base.extend({
+   *     app: async ({ app }, use) => {
+   *       await app.open('/dashboard');
+   *       await use(app);
+   *     },
+   *   });
+   */
+  extend(overrides: FixtureOverrides<Fixtures & Worker, Worker>): TestAPI<Fixtures, Worker>;
   /**
    * Returns a new `test` whose registrations carry these fixture
    * definitions on top of the ones it already had. Each attempt sets up the
@@ -1082,12 +1128,17 @@ export type WorkerFixtureDefinition<Worker, Value> = readonly [
  * of the `test` it extends and the ones declared beside it, in any order: it
  * is set up after the ones it names. A test fixture sees every fixture a
  * test sees; a worker fixture sees worker fixtures only, since it outlives
- * every test fixture. A name the base already has is a type error (and a
- * `COLLECTION_ERROR` at runtime).
+ * every test fixture.
+ *
+ * A name the base already has is not a new fixture: it extends that fixture,
+ * a built-in one included. Inside its function its own name is the fixture
+ * it extends, and it keeps that fixture's type and scope:
+ *
+ *   base.extend({ app: async ({ app }, use) => { await app.open('/'); await use(app); } })
  */
 export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
   readonly [K in keyof Extra]: K extends keyof Base
-    ? never
+    ? FixtureOverride<Base, Worker, K, Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Worker & NoInfer<ExtraWorker>>
     : TestFixtureDefinition<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Extra[K]>;
 } & {
   // Not inferred: an `extend({ ... })` without type arguments infers its test
@@ -1096,7 +1147,23 @@ export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
   readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra
     ? never
     : WorkerFixtureDefinition<Worker & NoInfer<ExtraWorker>, NoInfer<ExtraWorker>[K]>;
+} & FixtureOverrides<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Worker & NoInfer<ExtraWorker>, Base, Worker>;
+/**
+ * Fixtures that extend ones the base already has, each optional. `Sees` and
+ * `WorkerSees` are what an override's function receives: the base's
+ * fixtures, and the ones declared beside it.
+ */
+export type FixtureOverrides<Sees, WorkerSees, Base = Sees, Worker = WorkerSees> = {
+  readonly [K in keyof Base]?: FixtureOverride<Base, Worker, K, Sees, WorkerSees>;
 };
+/**
+ * A fixture that extends `K`, one the base already has: it hands over the
+ * same type and keeps the scope, so the override of a worker fixture
+ * receives worker fixtures (`WorkerSees`) only.
+ */
+export type FixtureOverride<Base, Worker, K extends keyof Base, Sees, WorkerSees> = K extends keyof Worker
+  ? FixtureFn<WorkerSees, Base[K]> | WorkerFixtureDefinition<WorkerSees, Base[K]>
+  : TestFixtureDefinition<Sees, Base[K]>;
 ```
 
 ### Function types

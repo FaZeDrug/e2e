@@ -82,6 +82,21 @@ export const test = base.extend<{ cleanData: void }>({
 
 `{ scope: 'worker', auto: true }` を指定すると、ワーカーごとに 1 回実行されます。
 
+## 組み込みフィクスチャを拡張する
+
+`app` や `device` などの組み込みフィクスチャと同じ名前をフィクスチャに付けると、その前後でコードを実行できます。関数の中では、その名前は組み込みフィクスチャを指します。その名前を指定したテストとフックは、`use` に渡した値を受け取ります。
+
+```ts title="tests/fixtures.ts"
+export const test = base.extend({
+  device: async ({ device }, use) => {
+    await device.setPermission('camera', 'deny');
+    await use(device);
+  },
+});
+```
+
+このフィクスチャは、組み込みフィクスチャのスコープを引き継ぎます。モバイルターゲットでは `device` はワーカーフィクスチャなので、この例はワーカーごとに 1 回実行され、`beforeAll` にも渡されます。[フィクスチャの拡張](/reference/test#extending-a-fixture)を参照してください。
+
 ## Share a fixture across a worker
 
 A worker fixture is set up one time per worker and target, by the first test

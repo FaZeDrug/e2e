@@ -589,11 +589,11 @@ test('renames the workspace', async ({ workspace, screen }) => {
 
 | 誤り | 失敗のタイミングと内容 |
 | --- | --- |
-| 関数または `[fn, { scope, auto }]` の組を値に持つプレーンオブジェクトではない定義、`'test'` と `'worker'` 以外のスコープ、真偽値ではない `auto`、`scope` と `auto` 以外のオプション、空の名前、コアの名前（`agent`、`app`、`screen`、`platform`、`session`）、またはチェーン内の前の `extend` で定義済みの名前 | インポート時に、フィクスチャ名を示す `COLLECTION_ERROR` |
+| 関数または `[fn, { scope, auto }]` の組を値に持つプレーンオブジェクトではない定義、`'test'` と `'worker'` 以外のスコープ、真偽値ではない `auto`、`scope` と `auto` 以外のオプション、または空の名前 | インポート時に、フィクスチャ名を示す `COLLECTION_ERROR` |
 | 最初の引数を分割代入しない関数、またはそこで残余プロパティや計算プロパティを受け取る関数 | インポート時に、フィクスチャ名を示す `COLLECTION_ERROR` |
 | 互いを循環して指定するフィクスチャ | インポート時に、循環を示す `COLLECTION_ERROR` |
 | ターゲットにないフィクスチャ名を、そのターゲットで実行するテスト、そのフック、またはそれらが必要とするフィクスチャが指定した場合 | 収集時に `COLLECTION_ERROR` |
-| ターゲットのエンジンが提供するフィクスチャと同じ名前（Playwright ターゲットの `browser`）が、そのターゲットで実行するテストのチェーンにある場合 | 収集時に `COLLECTION_ERROR` |
+| [拡張元のフィクスチャ](#extending-a-fixture)のスコープと異なる `scope` | そのスコープがどのエンジンでも同じ場合はインポート時、それ以外は収集時に、両方を示す `COLLECTION_ERROR` |
 | 後の `extend` で宣言したフィクスチャを指定するフィクスチャ | 収集時に `COLLECTION_ERROR` |
 | `use` を呼ばずに戻る定義 | 試行の `beforeEach` で `TEST_SETUP_FAILED` |
 | `use` を 2 回呼ぶ定義 | 試行の後処理で `TEST_SETUP_FAILED` |
@@ -641,6 +641,26 @@ export const test = base.extend<{}, { database: Database }>({
   stays set up until the worker ends.
   Declare worker fixtures in a module the file imports.
 - `extend({ ... })` without type arguments infers test fixtures only.
+
+#### フィクスチャの拡張
+
+`test` がすでに持つフィクスチャと同じ名前の定義は、そのフィクスチャを拡張します。組み込みフィクスチャ（`agent`、`app`、`screen`、`platform`、`session`、`browser`、`device`）でも、前の `extend` のフィクスチャでも拡張できます。
+
+```ts
+export const test = base.extend({
+  app: async ({ app }, use) => {
+    await app.open('/dashboard');
+    await use(app); // tests, hooks, and other fixtures get this value
+  },
+});
+```
+
+- 関数の中では、自身の名前は拡張元のフィクスチャを指します。組み込みフィクスチャ、または同じ名前の前のフィクスチャです。自身の名前を指定しない関数は、そのフィクスチャを置き換えます。
+- そのフィクスチャを指定したテスト、フック、ほかのフィクスチャは、`use` に渡した値を受け取ります。ランナー自身による組み込みフィクスチャの扱いは変わりません。
+- 必要に応じて、そのフィクスチャを指定したコードのためにセットアップします。
+- ターゲット上での拡張元のスコープを引き継ぎます。`device` はワーカーフィクスチャなので、その拡張はワーカーごとに 1 回実行され、`beforeAll` にも渡されます。`app` は、Web ターゲットではテストフィクスチャ、モバイルターゲットではワーカーフィクスチャです。オプションの `scope` は、そのスコープと同じでなければなりません。
+- 型も引き継ぎます。型引数なしで定義してください。`extend` の型引数は、新しいフィクスチャのためのものです。
+- その名前のフィクスチャがないターゲットでは、そこで実行するコードが指定するまで何も失敗しません。指定すると、ターゲットにそのフィクスチャがないため、収集時に実行が失敗します。
 
 ## 型
 
@@ -713,6 +733,21 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *   export const test = base.extend<{ device: Device }>();
    */
   extend<Extra = {}, ExtraWorker = {}>(): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
+  /**
+   * Returns a new `test` whose registrations extend fixtures it already
+   * has, built-in ones included. Inside the function the fixture's own name
+   * is the fixture it extends; the value it hands to `use` is what tests,
+   * hooks, and other fixtures receive under that name. It keeps the type and
+   * the scope of the fixture it extends:
+   *
+   *   export const test = base.extend({
+   *     app: async ({ app }, use) => {
+   *       await app.open('/dashboard');
+   *       await use(app);
+   *     },
+   *   });
+   */
+  extend(overrides: FixtureOverrides<Fixtures & Worker, Worker>): TestAPI<Fixtures, Worker>;
   /**
    * Returns a new `test` whose registrations carry these fixture
    * definitions on top of the ones it already had. Each attempt sets up the
@@ -924,12 +959,17 @@ export type WorkerFixtureDefinition<Worker, Value> = readonly [
  * of the `test` it extends and the ones declared beside it, in any order: it
  * is set up after the ones it names. A test fixture sees every fixture a
  * test sees; a worker fixture sees worker fixtures only, since it outlives
- * every test fixture. A name the base already has is a type error (and a
- * `COLLECTION_ERROR` at runtime).
+ * every test fixture.
+ *
+ * A name the base already has is not a new fixture: it extends that fixture,
+ * a built-in one included. Inside its function its own name is the fixture
+ * it extends, and it keeps that fixture's type and scope:
+ *
+ *   base.extend({ app: async ({ app }, use) => { await app.open('/'); await use(app); } })
  */
 export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
   readonly [K in keyof Extra]: K extends keyof Base
-    ? never
+    ? FixtureOverride<Base, Worker, K, Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Worker & NoInfer<ExtraWorker>>
     : TestFixtureDefinition<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Extra[K]>;
 } & {
   // Not inferred: an `extend({ ... })` without type arguments infers its test
@@ -938,7 +978,23 @@ export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
   readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra
     ? never
     : WorkerFixtureDefinition<Worker & NoInfer<ExtraWorker>, NoInfer<ExtraWorker>[K]>;
+} & FixtureOverrides<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Worker & NoInfer<ExtraWorker>, Base, Worker>;
+/**
+ * Fixtures that extend ones the base already has, each optional. `Sees` and
+ * `WorkerSees` are what an override's function receives: the base's
+ * fixtures, and the ones declared beside it.
+ */
+export type FixtureOverrides<Sees, WorkerSees, Base = Sees, Worker = WorkerSees> = {
+  readonly [K in keyof Base]?: FixtureOverride<Base, Worker, K, Sees, WorkerSees>;
 };
+/**
+ * A fixture that extends `K`, one the base already has: it hands over the
+ * same type and keeps the scope, so the override of a worker fixture
+ * receives worker fixtures (`WorkerSees`) only.
+ */
+export type FixtureOverride<Base, Worker, K extends keyof Base, Sees, WorkerSees> = K extends keyof Worker
+  ? FixtureFn<WorkerSees, Base[K]> | WorkerFixtureDefinition<WorkerSees, Base[K]>
+  : TestFixtureDefinition<Sees, Base[K]>;
 ```
 
 ### 関数の型

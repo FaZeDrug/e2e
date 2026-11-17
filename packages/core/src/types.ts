@@ -856,12 +856,17 @@ export type WorkerFixtureDefinition<Worker, Value> = readonly [
  * of the `test` it extends and the ones declared beside it, in any order: it
  * is set up after the ones it names. A test fixture sees every fixture a
  * test sees; a worker fixture sees worker fixtures only, since it outlives
- * every test fixture. A name the base already has is a type error (and a
- * `COLLECTION_ERROR` at runtime).
+ * every test fixture.
+ *
+ * A name the base already has is not a new fixture: it extends that fixture,
+ * a built-in one included. Inside its function its own name is the fixture
+ * it extends, and it keeps that fixture's type and scope:
+ *
+ *   base.extend({ app: async ({ app }, use) => { await app.open('/'); await use(app); } })
  */
 export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
   readonly [K in keyof Extra]: K extends keyof Base
-    ? never
+    ? FixtureOverride<Base, Worker, K, Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Worker & NoInfer<ExtraWorker>>
     : TestFixtureDefinition<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Extra[K]>;
 } & {
   // Not inferred: an `extend({ ... })` without type arguments infers its test
@@ -870,7 +875,23 @@ export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
   readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra
     ? never
     : WorkerFixtureDefinition<Worker & NoInfer<ExtraWorker>, NoInfer<ExtraWorker>[K]>;
+} & FixtureOverrides<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Worker & NoInfer<ExtraWorker>, Base, Worker>;
+/**
+ * Fixtures that extend ones the base already has, each optional. `Sees` and
+ * `WorkerSees` are what an override's function receives: the base's
+ * fixtures, and the ones declared beside it.
+ */
+export type FixtureOverrides<Sees, WorkerSees, Base = Sees, Worker = WorkerSees> = {
+  readonly [K in keyof Base]?: FixtureOverride<Base, Worker, K, Sees, WorkerSees>;
 };
+/**
+ * A fixture that extends `K`, one the base already has: it hands over the
+ * same type and keeps the scope, so the override of a worker fixture
+ * receives worker fixtures (`WorkerSees`) only.
+ */
+export type FixtureOverride<Base, Worker, K extends keyof Base, Sees, WorkerSees> = K extends keyof Worker
+  ? FixtureFn<WorkerSees, Base[K]> | WorkerFixtureDefinition<WorkerSees, Base[K]>
+  : TestFixtureDefinition<Sees, Base[K]>;
 /** A `describe` body. An async body is a type error. */
 export type SynchronousBody<Result> = Extract<Result, PromiseLike<unknown>> extends never
   ? () => Result
@@ -957,6 +978,21 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *   export const test = base.extend<{ device: Device }>();
    */
   extend<Extra = {}, ExtraWorker = {}>(): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
+  /**
+   * Returns a new `test` whose registrations extend fixtures it already
+   * has, built-in ones included. Inside the function the fixture's own name
+   * is the fixture it extends; the value it hands to `use` is what tests,
+   * hooks, and other fixtures receive under that name. It keeps the type and
+   * the scope of the fixture it extends:
+   *
+   *   export const test = base.extend({
+   *     app: async ({ app }, use) => {
+   *       await app.open('/dashboard');
+   *       await use(app);
+   *     },
+   *   });
+   */
+  extend(overrides: FixtureOverrides<Fixtures & Worker, Worker>): TestAPI<Fixtures, Worker>;
   /**
    * Returns a new `test` whose registrations carry these fixture
    * definitions on top of the ones it already had. Each attempt sets up the

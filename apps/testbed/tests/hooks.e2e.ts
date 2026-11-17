@@ -1,5 +1,5 @@
 import { expect } from 'e2e';
-import { test, todosTest, unnamedSetupCount, type Account } from './worker-account.ts';
+import { onTodos, test, todosTest, unnamedSetupCount, type Account } from './worker-account.ts';
 
 test.describe('hooks with a worker fixture', { tags: ['hooks'] }, () => {
   // Each test checks only what it can see itself, since a filter or a retry can run either one alone.
@@ -75,5 +75,12 @@ todosTest.describe('fixtures on demand', { tags: ['hooks'] }, () => {
     await screen.getByLabel('New todo').press('Enter');
     await expect(screen.getByTestId('todo')).toHaveCount(1);
     expect(unnamedSetupCount()).toBe(0);
+  });
+});
+
+onTodos.describe('an extended built-in fixture', { tags: ['hooks'] }, () => {
+  onTodos('runs for a test that names it', async ({ app, screen }) => {
+    await expect(screen.getByLabel('New todo')).toBeVisible();
+    expect(app.baseUrl).toBeDefined();
   });
 });

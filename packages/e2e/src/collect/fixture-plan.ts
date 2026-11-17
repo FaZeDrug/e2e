@@ -70,11 +70,6 @@ function hookUser(hook: Pick<RegisteredHook, 'kind' | 'fn' | 'source'>): Fixture
   return { what: `${hook.kind} hook`, fn: hook.fn, source: hook.source };
 }
 
-/** A `test.extend()` fixture function as a fixture user: its first parameter is what it depends on. */
-function definitionUser(definition: FixtureDefinition): FixtureUser {
-  return { what: `${definition.scope === 'worker' ? 'worker fixture' : 'fixture'} "${definition.name}"`, fn: definition.fn, source: definition.source };
-}
-
 /** What to set up for one piece of test code, and whether it reaches the engine. */
 export interface FixturePlan {
   readonly target: FixtureTarget;
@@ -84,6 +79,14 @@ export interface FixturePlan {
   readonly scope: FixtureScope;
   /** The chain's fixtures to set up: in declaration order, each after the fixtures it names. */
   readonly order: readonly FixtureDefinition[];
+  /** The scope each planned fixture has on the target: the one it declares, or the one of the fixture it extends. */
+  readonly scopes: ReadonlyMap<FixtureDefinition, FixtureScope>;
+  /**
+   * For a planned fixture that names itself, the earlier fixture of its name
+   * whose value it receives. One that names itself and is not here receives
+   * the built-in.
+   */
+  readonly bases: ReadonlyMap<FixtureDefinition, FixtureDefinition>;
   /**
    * Whether the code, or a fixture it needs, names a built-in fixture the
    * engine backs: any but `platform`. Code that names none never touches the
@@ -94,53 +97,105 @@ export interface FixturePlan {
   readonly engineBacked: ReadonlySet<FixtureDefinition>;
 }
 
-/** The fixtures of one chain, by name, on one target; no target while a `test.extend()` call is checked. */
+/** The fixtures of one chain on one target; no target while a `test.extend()` call is checked. */
 interface Pool {
   readonly target: FixtureTarget | undefined;
-  readonly byName: ReadonlyMap<string, FixtureDefinition>;
+  readonly chain: readonly FixtureDefinition[];
 }
 
 /** What one name a function reads resolved to. */
 type Dependency = { readonly definition: FixtureDefinition } | { readonly definition?: undefined; readonly engineBacked: boolean };
+
+const SCOPE_RULE = 'beforeAll, afterAll, and worker fixtures see worker fixtures only, since a test fixture is set up for one test. Use it in beforeEach, or save the state it builds with test.setup()';
 
 /** Walks the fixtures a plan needs, each after the fixtures it names. */
 class Planner {
   readonly order: FixtureDefinition[] = [];
   readonly engineBacked = new Set<FixtureDefinition>();
   private readonly state = new Map<FixtureDefinition, 'visiting' | 'done'>();
+  private readonly scopes = new Map<FixtureDefinition, FixtureScope | undefined>();
 
   constructor(private readonly pool: Pool) {}
+
+  /**
+   * The chain fixture `name` stands for. A fixture that names itself reads
+   * the one of its name declared before it, which it extends; any other
+   * reader gets the last one declared, so an override reaches everyone.
+   */
+  declared(name: string, from?: FixtureDefinition): FixtureDefinition | undefined {
+    const { chain } = this.pool;
+    const before = from !== undefined && from.name === name ? chain.slice(0, chain.indexOf(from)) : chain;
+    return before.findLast((definition) => definition.name === name);
+  }
+
+  /**
+   * The scope `definition` has on the target: the one it declares, else the
+   * one of the fixture it extends (an earlier one of its name, or a
+   * built-in), else `test`. Undefined while no target is known and the name
+   * may be an engine's. A declared scope that differs from the extended
+   * fixture's is an error naming both.
+   */
+  scopeOf(definition: FixtureDefinition): FixtureScope | undefined {
+    if (this.scopes.has(definition)) return this.scopes.get(definition);
+    const { target } = this.pool;
+    const { name } = definition;
+    const base = this.declared(name, definition);
+    const builtIn = target === undefined ? Object.hasOwn(CORE_FIXTURES, name) : builtInNames(target).includes(name);
+    const extended = base !== undefined ? this.scopeOf(base) : target === undefined ? fixedScope(name) : builtIn ? builtInScope(target, name) : undefined;
+    if (definition.scope !== undefined && extended !== undefined && extended !== definition.scope) {
+      const what = base !== undefined ? `the fixture "${name}" of an earlier test.extend()` : `the built-in "${name}"`;
+      throw new FixtureUseError(
+        `fixture "${name}" is declared with scope '${definition.scope}', but it extends ${what}, a ${extended} fixture${this.onTarget()}: a fixture that extends another keeps its scope`,
+        definition.source,
+      );
+    }
+    // Before a target is known, a plain function named like no core fixture may still extend an engine's.
+    const scope = definition.scope ?? extended ?? (target === undefined && base === undefined && !builtIn ? undefined : 'test');
+    this.scopes.set(definition, scope);
+    return scope;
+  }
+
+  private onTarget(): string {
+    return this.pool.target === undefined ? '' : ` on target "${this.pool.target.name}"`;
+  }
+
+  /** A `test.extend()` fixture function as a fixture user: its first parameter is what it depends on. */
+  private user(definition: FixtureDefinition): FixtureUser {
+    return { what: `${this.scopeOf(definition) === 'worker' ? 'worker fixture' : 'fixture'} "${definition.name}"`, fn: definition.fn, source: definition.source };
+  }
 
   /**
    * Resolves `name`, which `user` reads. `scope` is how long `user` lives: a
    * suite hook or a worker fixture (`worker`) cannot read a test fixture.
    * `from` is the fixture reading it, which sees the fixtures of its own
-   * `test.extend()` call and of the ones before it.
+   * `test.extend()` call and of the ones before it, and every fixture that
+   * extends a built-in.
    */
-  read(name: string, user: FixtureUser, scope: FixtureScope, from?: FixtureDefinition): Dependency {
-    const { target, byName } = this.pool;
-    const declared = byName.get(name);
-    const definition = declared !== undefined && (from === undefined || declared.layer <= from.layer) ? declared : undefined;
+  read(name: string, user: FixtureUser, scope: FixtureScope | undefined, from?: FixtureDefinition): Dependency {
+    const { target, chain } = this.pool;
+    const builtIn = target !== undefined && builtInNames(target).includes(name);
+    const definition = this.declared(name, from);
+    const visible = (each: FixtureDefinition): boolean => from === undefined || each.layer <= from.layer;
     let fixtureScope: FixtureScope | undefined;
-    if (definition !== undefined) fixtureScope = definition.scope;
-    else if (target === undefined) {
+    if (definition !== undefined) {
+      if (target !== undefined && !builtIn && !chain.some((each) => each.name === name && visible(each))) {
+        throw new FixtureUseError(
+          `${user.what} names "${name}", which a later test.extend() declares: a fixture sees the fixtures of its own extend() call and of the ones before it`,
+          user.source,
+        );
+      }
+      fixtureScope = this.scopeOf(definition);
+    } else if (target === undefined) {
       // Before a target is known, a name the chain lacks may be an engine's, and `app` and `screen` have the engine's scope.
       fixtureScope = fixedScope(name);
-    } else if (builtInNames(target).includes(name)) fixtureScope = builtInScope(target, name);
-    else if (declared !== undefined) {
-      throw new FixtureUseError(
-        `${user.what} names "${name}", which a later test.extend() declares: a fixture sees the fixtures of its own extend() call and of the ones before it`,
-        user.source,
-      );
-    } else {
-      const available = [...builtInNames(target), ...[...byName.values()].filter((each) => from === undefined || each.layer <= from.layer).map((each) => each.name)];
-      throw new FixtureUseError(`${user.what} names "${name}": ${unknownFixtureMessage(target, name, available.toSorted())}`, user.source);
+    } else if (builtIn) fixtureScope = builtInScope(target, name);
+    else {
+      const declared = chain.filter((each) => visible(each) && each !== from).map((each) => each.name);
+      const available = [...new Set([...builtInNames(target), ...declared])].toSorted();
+      throw new FixtureUseError(`${user.what} names "${name}": ${unknownFixtureMessage(target, name, available)}`, user.source);
     }
     if (scope === 'worker' && fixtureScope === 'test') {
-      throw new FixtureUseError(
-        `${user.what} names "${name}", a test fixture${target === undefined ? '' : ` on target "${target.name}"`}: beforeAll, afterAll, and worker fixtures see worker fixtures only, since a test fixture is set up for one test. Use it in beforeEach, or save the state it builds with test.setup()`,
-        user.source,
-      );
+      throw new FixtureUseError(`${user.what} names "${name}", a test fixture${this.onTarget()}: ${SCOPE_RULE}`, user.source);
     }
     return definition === undefined ? { engineBacked: name !== 'platform' } : { definition };
   }
@@ -154,9 +209,10 @@ class Planner {
       throw new FixtureUseError(`fixtures depend on each other in a cycle: ${cycle}. A fixture cannot name one that needs it`, definition.source);
     }
     this.state.set(definition, 'visiting');
-    const user = definitionUser(definition);
+    const scope = this.scopeOf(definition);
+    const user = this.user(definition);
     for (const name of fixtureNames(user.fn, user.what, user.source)) {
-      const dependency = this.read(name, user, definition.scope, definition);
+      const dependency = this.read(name, user, scope, definition);
       if (dependency.definition === undefined) {
         if (dependency.engineBacked) this.engineBacked.add(definition);
         continue;
@@ -169,18 +225,15 @@ class Planner {
   }
 }
 
-function poolOf(target: FixtureTarget | undefined, chain: readonly FixtureDefinition[]): Pool {
-  return { target, byName: new Map(chain.map((definition) => [definition.name, definition])) };
-}
-
 /**
  * Checks the fixtures one `test.extend()` call added (`added`, the end of
  * `chain`) as far as they can be before a target is known: each function
- * destructures its first parameter, no fixture needs itself, and a worker
- * fixture names no test fixture of the chain, `agent`, or `session`.
+ * destructures its first parameter, no two fixtures need each other, a
+ * fixture that extends another keeps its scope, and a worker fixture names
+ * no fixture known to be a test fixture.
  */
 export function checkDeclaredFixtures(chain: readonly FixtureDefinition[], added: readonly FixtureDefinition[]): void {
-  const planner = new Planner(poolOf(undefined, chain));
+  const planner = new Planner({ target: undefined, chain });
   for (const definition of added) planner.visit(definition);
 }
 
@@ -197,22 +250,14 @@ interface PlanRequest {
  * name, the ones those name, and the `auto` ones (a suite hook sets up no
  * test fixture, `auto` or not). Throws a `FixtureUseError`, before anything
  * is set up, for a name the target has no fixture for, a test fixture named
- * by a suite hook or a worker fixture, a cycle, and a chain fixture named
- * like one the target's engine contributes.
+ * by a suite hook or a worker fixture, a cycle, and a fixture whose declared
+ * scope is not the one of the fixture it extends.
  */
 function planFixtures(request: PlanRequest): FixturePlan {
   const { target, chain, scope, users } = request;
-  const engineFixtures = Object.keys(target.engine?.fixtures ?? {});
-  for (const definition of chain) {
-    if (!engineFixtures.includes(definition.name)) continue;
-    throw new FixtureUseError(
-      `fixture "${definition.name}" is contributed by engine ${target.engine?.name ?? 'none'} on target "${target.name}"; test.extend() cannot redefine it`,
-      definition.source,
-    );
-  }
-  const pool = poolOf(target, chain);
+  const pool: Pool = { target, chain };
   const reach = new Planner(pool);
-  const named = new Set(chain.filter((definition) => definition.auto && (scope === 'test' || definition.scope === 'worker')));
+  const named = new Set(chain.filter((definition) => definition.auto && (scope === 'test' || reach.scopeOf(definition) === 'worker')));
   let usesEngine = false;
   for (const user of users) {
     for (const name of fixtureNames(user.fn, user.what, user.source)) {
@@ -229,7 +274,14 @@ function planFixtures(request: PlanRequest): FixturePlan {
   const needed = new Set(reach.order);
   const ordered = new Planner(pool);
   for (const definition of chain) if (needed.has(definition)) ordered.visit(definition);
-  return { target, chain, scope, order: ordered.order, usesEngine, engineBacked: reach.engineBacked };
+  const scopes = new Map<FixtureDefinition, FixtureScope>();
+  const bases = new Map<FixtureDefinition, FixtureDefinition>();
+  for (const definition of ordered.order) {
+    scopes.set(definition, reach.scopeOf(definition) ?? 'test');
+    const base = fixtureNames(definition.fn, 'fixture').includes(definition.name) ? reach.declared(definition.name, definition) : undefined;
+    if (base !== undefined) bases.set(definition, base);
+  }
+  return { target, chain, scope, order: ordered.order, scopes, bases, usesEngine, engineBacked: reach.engineBacked };
 }
 
 /**

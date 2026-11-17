@@ -589,11 +589,11 @@ test('renames the workspace', async ({ workspace, screen }) => {
 
 | 错误用法 | 失败位置和错误 |
 | --- | --- |
-| 值不是由函数或 `[fn, { scope, auto }]` 组成的普通对象、作用域不是 `'test'` 或 `'worker'`、`auto` 不是布尔值、使用 `scope` 和 `auto` 之外的选项、名称为空、使用核心名称（`agent`、`app`、`screen`、`platform`、`session`），或名称已由链中更早的 `extend` 定义 | 导入时抛出 `COLLECTION_ERROR`，指出测试夹具名称 |
+| 值不是由函数或 `[fn, { scope, auto }]` 组成的普通对象、作用域不是 `'test'` 或 `'worker'`、`auto` 不是布尔值、使用 `scope` 和 `auto` 之外的选项，或名称为空 | 导入时抛出 `COLLECTION_ERROR`，指出测试夹具名称 |
 | 函数没有解构第一个参数，或在其中使用剩余属性或计算属性 | 导入时抛出 `COLLECTION_ERROR`，指出测试夹具名称 |
 | 测试夹具互相列出，形成循环 | 导入时抛出 `COLLECTION_ERROR`，指出该循环 |
 | 在某个测试目标上运行的测试、它的钩子或它们需要的测试夹具，列出了该测试目标没有的名称 | 收集阶段，`COLLECTION_ERROR` |
-| 在某个测试目标上运行的测试，其链中的测试夹具使用了该测试目标引擎提供的名称（Playwright 测试目标上的 `browser`） | 收集阶段，`COLLECTION_ERROR` |
+| `scope` 与[被扩展的测试夹具](#extending-a-fixture)的作用域不同 | 如果该作用域在所有引擎上都相同，则在导入时，否则在收集阶段，抛出指出两者的 `COLLECTION_ERROR` |
 | 测试夹具列出了之后的 `extend` 声明的测试夹具 | 收集阶段，`COLLECTION_ERROR` |
 | 定义未调用 `use` 就返回 | 尝试的 `beforeEach` 阶段，`TEST_SETUP_FAILED` |
 | 定义调用了两次 `use` | 尝试的清理阶段，`TEST_SETUP_FAILED` |
@@ -641,6 +641,26 @@ export const test = base.extend<{}, { database: Database }>({
   stays set up until the worker ends.
   Declare worker fixtures in a module the file imports.
 - `extend({ ... })` without type arguments infers test fixtures only.
+
+#### 扩展测试夹具
+
+如果定义的名称与 `test` 已有的测试夹具相同，它就会扩展那个测试夹具。可以扩展内置测试夹具（`agent`、`app`、`screen`、`platform`、`session`、`browser`、`device`），也可以扩展更早的 `extend` 中的测试夹具。
+
+```ts
+export const test = base.extend({
+  app: async ({ app }, use) => {
+    await app.open('/dashboard');
+    await use(app); // tests, hooks, and other fixtures get this value
+  },
+});
+```
+
+- 在函数内部，它自己的名称指被扩展的测试夹具：内置测试夹具，或更早的同名测试夹具。不列出自身名称的函数会替换该测试夹具。
+- 列出该测试夹具的测试、钩子和其他测试夹具，会得到传给 `use` 的值。运行器自身对内置测试夹具的使用不变。
+- 它按需准备，只为列出该测试夹具的代码准备。
+- 它沿用被扩展的测试夹具在测试目标上的作用域。`device` 是工作进程测试夹具，因此它的扩展在每个工作进程中运行一次，`beforeAll` 也会得到它。`app` 在网页端测试目标上是测试作用域，在移动端测试目标上是工作进程作用域。选项中的 `scope` 必须与该作用域相同。
+- 它也沿用类型。定义时不要传类型参数：`extend` 的类型参数用于新的测试夹具。
+- 在没有同名测试夹具的测试目标上，只有当在那里运行的代码列出它时才会失败。此时运行会在收集阶段失败，因为该测试目标没有这个测试夹具。
 
 ## 类型
 
@@ -713,6 +733,21 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *   export const test = base.extend<{ device: Device }>();
    */
   extend<Extra = {}, ExtraWorker = {}>(): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
+  /**
+   * Returns a new `test` whose registrations extend fixtures it already
+   * has, built-in ones included. Inside the function the fixture's own name
+   * is the fixture it extends; the value it hands to `use` is what tests,
+   * hooks, and other fixtures receive under that name. It keeps the type and
+   * the scope of the fixture it extends:
+   *
+   *   export const test = base.extend({
+   *     app: async ({ app }, use) => {
+   *       await app.open('/dashboard');
+   *       await use(app);
+   *     },
+   *   });
+   */
+  extend(overrides: FixtureOverrides<Fixtures & Worker, Worker>): TestAPI<Fixtures, Worker>;
   /**
    * Returns a new `test` whose registrations carry these fixture
    * definitions on top of the ones it already had. Each attempt sets up the
@@ -924,12 +959,17 @@ export type WorkerFixtureDefinition<Worker, Value> = readonly [
  * of the `test` it extends and the ones declared beside it, in any order: it
  * is set up after the ones it names. A test fixture sees every fixture a
  * test sees; a worker fixture sees worker fixtures only, since it outlives
- * every test fixture. A name the base already has is a type error (and a
- * `COLLECTION_ERROR` at runtime).
+ * every test fixture.
+ *
+ * A name the base already has is not a new fixture: it extends that fixture,
+ * a built-in one included. Inside its function its own name is the fixture
+ * it extends, and it keeps that fixture's type and scope:
+ *
+ *   base.extend({ app: async ({ app }, use) => { await app.open('/'); await use(app); } })
  */
 export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
   readonly [K in keyof Extra]: K extends keyof Base
-    ? never
+    ? FixtureOverride<Base, Worker, K, Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Worker & NoInfer<ExtraWorker>>
     : TestFixtureDefinition<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Extra[K]>;
 } & {
   // Not inferred: an `extend({ ... })` without type arguments infers its test
@@ -938,7 +978,23 @@ export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
   readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra
     ? never
     : WorkerFixtureDefinition<Worker & NoInfer<ExtraWorker>, NoInfer<ExtraWorker>[K]>;
+} & FixtureOverrides<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Worker & NoInfer<ExtraWorker>, Base, Worker>;
+/**
+ * Fixtures that extend ones the base already has, each optional. `Sees` and
+ * `WorkerSees` are what an override's function receives: the base's
+ * fixtures, and the ones declared beside it.
+ */
+export type FixtureOverrides<Sees, WorkerSees, Base = Sees, Worker = WorkerSees> = {
+  readonly [K in keyof Base]?: FixtureOverride<Base, Worker, K, Sees, WorkerSees>;
 };
+/**
+ * A fixture that extends `K`, one the base already has: it hands over the
+ * same type and keeps the scope, so the override of a worker fixture
+ * receives worker fixtures (`WorkerSees`) only.
+ */
+export type FixtureOverride<Base, Worker, K extends keyof Base, Sees, WorkerSees> = K extends keyof Worker
+  ? FixtureFn<WorkerSees, Base[K]> | WorkerFixtureDefinition<WorkerSees, Base[K]>
+  : TestFixtureDefinition<Sees, Base[K]>;
 ```
 
 ### 函数类型

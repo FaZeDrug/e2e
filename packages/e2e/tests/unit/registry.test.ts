@@ -498,7 +498,7 @@ describe('test.extend', () => {
     expect(hookChains).toEqual([['beforeEach', 'one', 'two'], ['afterEach', 'one', 'two'], ['afterAll', 'one']]);
   });
 
-  it('reads a scope from [fn, { scope }] and defaults to test', async () => {
+  it('reads a scope from [fn, { scope }], and none from a plain function', async () => {
     const extended = test.extend<{ page: string; plain: string }, { database: string }>({
       plain: fixture,
       page: [fixture, { scope: 'test' }],
@@ -508,7 +508,8 @@ describe('test.extend', () => {
       extended('scoped', noop);
     });
     const scopes = registration.tests[0]!.fixtures.map((definition) => [definition.name, definition.scope, definition.fn === fixture]);
-    expect(scopes).toEqual([['plain', 'test', true], ['page', 'test', true], ['database', 'worker', true]]);
+    // A plain function declares no scope: it is a test fixture unless it extends a worker fixture.
+    expect(scopes).toEqual([['plain', undefined, true], ['page', 'test', true], ['database', 'worker', true]]);
   });
 
   it('reads auto from the options, in either scope, and numbers each extend() call', async () => {
@@ -523,10 +524,10 @@ describe('test.extend', () => {
       extended('auto', noop);
     });
     expect(registration.tests[0]!.fixtures.map(({ name, scope, auto, layer }) => ({ name, scope, auto, layer }))).toEqual([
-      { name: 'plain', scope: 'test', auto: false, layer: 0 },
-      { name: 'watch', scope: 'test', auto: true, layer: 0 },
+      { name: 'plain', scope: undefined, auto: false, layer: 0 },
+      { name: 'watch', scope: undefined, auto: true, layer: 0 },
       { name: 'install', scope: 'worker', auto: true, layer: 0 },
-      { name: 'later', scope: 'test', auto: false, layer: 1 },
+      { name: 'later', scope: undefined, auto: false, layer: 1 },
     ]);
     expect(registration.tests[0]!.fixtures[0]!.source?.file).toBe(fileURLToPath(import.meta.url));
     expect(() => test.extend({ watch: [fixture, { auto: 'yes' }] } as never)).toThrow(/fixture "watch" auto must be true or false, got "yes"/);
@@ -544,9 +545,12 @@ describe('test.extend', () => {
   it('refuses a cycle and a worker fixture that names a test fixture, where they are declared', () => {
     const needs = (name: string) => new Function(`return async ({ ${name} }, use) => { await use(${name}); };`)() as typeof fixture;
     expect(() => test.extend({ a: needs('b'), b: needs('a') } as never)).toThrow(/fixtures depend on each other in a cycle: "a" -> "b" -> "a"/);
-    expect(() => test.extend({ a: needs('a') } as never)).toThrow(/cycle: "a" -> "a"/);
-    const withPage = test.extend<{ page: string }>({ page: fixture });
+    // A fixture that names itself extends one of its name, which may be an engine's: decided per target.
+    expect(() => test.extend({ a: needs('a') } as never)).not.toThrow();
+    const withPage = test.extend<{ page: string }>({ page: [fixture, { scope: 'test' }] });
     expect(() => withPage.extend({ cache: [needs('page'), { scope: 'worker' }] } as never)).toThrow(/worker fixture "cache" names "page", a test fixture/);
+    // A plain function may extend an engine's worker fixture of its name, so its scope waits for the target.
+    expect(() => test.extend({ page: fixture }).extend({ cache: [needs('page'), { scope: 'worker' }] } as never)).not.toThrow();
     expect(() => test.extend({ cache: [needs('session'), { scope: 'worker' }] } as never)).toThrow(/worker fixture "cache" names "session", a test fixture/);
     // A name the chain lacks may be an engine's: left for the target to decide.
     expect(() => test.extend({ cache: [needs('device'), { scope: 'worker' }] } as never)).not.toThrow();
@@ -583,15 +587,23 @@ describe('test.extend', () => {
     expect(() => test.extend({ '': fixture } as never)).toThrow(/must not be empty/);
   });
 
-  it('rejects core fixture names and names an earlier extend already defined', () => {
-    for (const name of ['agent', 'app', 'screen', 'platform', 'session']) {
-      expect(() => test.extend({ [name]: fixture } as never)).toThrow(
-        new RegExp(`"${name}" is a core fixture`),
-      );
-    }
-    const extended = test.extend<{ workspace: string }>({ workspace: fixture });
-    expect(() => extended.extend({ workspace: fixture } as never)).toThrow(
-      /fixture "workspace" is already defined by an earlier test.extend\(\)/,
+  it('takes a fixture named like a core fixture, or like an earlier one of the chain, as one that extends it', async () => {
+    const needs = (name: string) => new Function(`return async ({ ${name} }, use) => { await use(${name}); };`)() as typeof fixture;
+    const extended = test
+      .extend({ app: needs('app'), platform: [needs('platform'), { scope: 'worker' }] } as never)
+      .extend({ app: needs('app') } as never);
+    const registration = await collectModule(async () => {
+      extended('extends', noop);
+    });
+    expect(registration.tests[0]!.fixtures.map(({ name, layer }) => [name, layer])).toEqual([['app', 0], ['platform', 0], ['app', 1]]);
+    // A core fixture whose scope is the same on every engine keeps it.
+    expect(() => test.extend({ agent: [needs('agent'), { scope: 'worker' }] } as never)).toThrow(
+      /fixture "agent" is declared with scope 'worker', but it extends the built-in "agent", a test fixture: a fixture that extends another keeps its scope/,
+    );
+    expect(() => test.extend({ platform: [needs('platform'), { scope: 'test' }] } as never)).toThrow(/extends the built-in "platform", a worker fixture/);
+    const withWorkspace = test.extend({ workspace: [fixture, { scope: 'worker' }] } as never);
+    expect(() => withWorkspace.extend({ workspace: [needs('workspace'), { scope: 'test' }] } as never)).toThrow(
+      /extends the fixture "workspace" of an earlier test\.extend\(\), a worker fixture/,
     );
   });
 });

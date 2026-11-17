@@ -25,7 +25,8 @@ function naming<Fn extends FixtureUserFn>(names: readonly string[], run: (fixtur
 }
 
 interface FixtureOptions {
-  readonly scope?: FixtureScope;
+  /** The scope it declares; `undefined`, spelled out, for a plain function, which declares none. */
+  readonly scope?: FixtureScope | undefined;
   readonly auto?: boolean;
   /** The `test.extend()` call that declares it, from 0. */
   readonly layer?: number;
@@ -36,7 +37,7 @@ interface FixtureOptions {
 function fixture(name: string, run: (fixtures: Fixtures, use: Use) => Promise<void>, options: FixtureOptions = {}): FixtureDefinition {
   return {
     name,
-    scope: options.scope ?? 'test',
+    scope: 'scope' in options ? options.scope : 'test',
     auto: options.auto ?? false,
     layer: options.layer ?? 0,
     fn: naming<FixtureFn<object, unknown>>(options.uses ?? [], run),
@@ -171,7 +172,8 @@ describe('planning', () => {
   it('names the cycle when fixtures need each other', () => {
     const chain = [logged([], 'a', 'A', { uses: ['b'] }), logged([], 'b', 'B', { uses: ['c'] }), logged([], 'c', 'C', { uses: ['a'] }), logged([], 'd', 'D', { uses: ['d'] })];
     expect(() => planAttempt(toyTarget(), testNaming(chain, ['b']), [])).toThrow(planError('fixtures depend on each other in a cycle: "b" -> "c" -> "a" -> "b"'));
-    expect(() => planAttempt(toyTarget(), testNaming(chain, ['d']), [])).toThrow(planError('cycle: "d" -> "d"'));
+    // A fixture that names itself extends the one before it, and here there is none.
+    expect(() => planAttempt(toyTarget(), testNaming(chain, ['d']), [])).toThrow(planError('fixture "d" names "d": target "toy" has no "d" fixture; available: a, agent, app, b, c, gadget, platform, screen, session'));
     // Found where the fixtures are declared too, before any target is known.
     expect(() => checkDeclaredFixtures(chain, chain)).toThrow(planError('cycle: "a" -> "b" -> "c" -> "a"'));
     // A cycle nothing names is not this test's.
@@ -191,12 +193,6 @@ describe('planning', () => {
   it('refuses a fixture that names one a later extend() declares', () => {
     const chain = [logged([], 'early', 'E', { uses: ['late'] }), logged([], 'late', 'L', { layer: 1 })];
     expect(() => planAttempt(toyTarget(), testNaming(chain, ['early']), [])).toThrow(planError('fixture "early" names "late", which a later test.extend() declares'));
-  });
-
-  it('refuses a chain fixture named like one the engine contributes, used or not', () => {
-    expect(() => planAttempt(toyTarget(), testNaming([logged([], 'gadget', 'mine')], []), [])).toThrow(
-      planError('fixture "gadget" is contributed by engine toy on target "toy"; test.extend() cannot redefine it'),
-    );
   });
 
   it('refuses a worker fixture that names a test fixture, where it is declared when the scope is known by then', () => {
@@ -245,6 +241,129 @@ describe('planning', () => {
     expect([...plan.engineBacked].map(({ name }) => name)).toEqual(['keeper', 'holder']);
     // An auto worker fixture that drives the device makes every suite hook of its chain need the engine.
     expect(planSuiteHook(target, suiteHook([logged([], 'install', undefined, { scope: 'worker', auto: true, uses: ['gadget'] })], [])).usesEngine).toBe(true);
+  });
+});
+
+describe('fixtures that extend a built-in', () => {
+  /** A fixture named `name` that names itself, wraps what it received as `{ wraps, by }`, and logs. */
+  function wrapping(log: string[], name: string, by: string, options: FixtureOptions = { scope: undefined }): FixtureDefinition {
+    return fixture(name, async (fixtures, use) => {
+      log.push(`setup:${by}`);
+      await use({ wraps: fixtures[name], by });
+      log.push(`teardown:${by}`);
+    }, { ...options, uses: [name, ...(options.uses ?? [])] });
+  }
+
+  it('hands the built-in to the override under its own name, and the override to everyone else', async () => {
+    const log: string[] = [];
+    const original = { id: 'original app' };
+    const seen: unknown[] = [];
+    const chain = [
+      fixture('reader', async ({ app }, use) => {
+        seen.push(app);
+        await use('R');
+      }, { uses: ['app'] }),
+      wrapping(log, 'app', 'override', { scope: undefined, layer: 1 }),
+    ];
+    const builtIns = { app: original, platform: 'toy' };
+    const plan = planAttempt(toyTarget(), testNaming(chain, ['app', 'reader']), []);
+    expect(plan.order.map(({ name }) => name)).toEqual(['app', 'reader']);
+    expect(plan.scopes.get(chain[1]!)).toBe('test');
+    const bound = attempt(chain, ['app', 'reader'], { builtIns });
+    await bound.setUp();
+    const wrapped = { wraps: original, by: 'override' };
+    expect((bound.fixtures as Fixtures)['app']).toEqual(wrapped);
+    // A fixture of an earlier extend() that names the built-in gets the override too.
+    expect(seen).toEqual([wrapped]);
+    // The attempt's own built-ins, which the runner reads, are untouched.
+    expect(builtIns.app).toBe(original);
+    for (const teardown of bound.teardowns()) await teardown.run();
+    expect(log).toEqual(['setup:override', 'teardown:override']);
+  });
+
+  it('sets the override up only for code that names the built-in', async () => {
+    const log: string[] = [];
+    const chain = [wrapping(log, 'app', 'override')];
+    const bound = attempt(chain, ['platform'], { builtIns: { app: 'original', platform: 'toy' } });
+    await bound.setUp();
+    expect(log).toEqual([]);
+    expect(bound.ready(hookNaming('afterEach', chain, ['app']).fn)).toBe(true);
+  });
+
+  it('chains overrides: each receives the one before it', async () => {
+    const log: string[] = [];
+    const chain = [wrapping(log, 'app', 'first'), wrapping(log, 'app', 'second', { scope: undefined, layer: 1 }), wrapping(log, 'app', 'third', { scope: 'test', layer: 2 })];
+    const bound = attempt(chain, ['app'], { builtIns: { app: 'original', platform: 'toy' } });
+    await bound.setUp();
+    expect((bound.fixtures as Fixtures)['app']).toEqual({ by: 'third', wraps: { by: 'second', wraps: { by: 'first', wraps: 'original' } } });
+    for (const teardown of bound.teardowns()) await teardown.run();
+    expect(log).toEqual(['setup:first', 'setup:second', 'setup:third', 'teardown:third', 'teardown:second', 'teardown:first']);
+  });
+
+  it('replaces the built-in for user code when the override does not name it', async () => {
+    const chain = [fixture('app', async (_fixtures, use) => use('mine'), { scope: undefined })];
+    const bound = attempt(chain, ['app'], { builtIns: { app: 'original', platform: 'toy' } });
+    await bound.setUp();
+    expect((bound.fixtures as Fixtures)['app']).toBe('mine');
+  });
+
+  it("takes the built-in's scope on the target: a worker fixture where the engine's state outlives a test", async () => {
+    const log: string[] = [];
+    const target = toyTarget('worker');
+    const pool = new WorkerFixturePool(target);
+    const chain = [wrapping(log, 'gadget', 'override')];
+    const gadgetOf = (id: string) => ({ gadget: { id: () => id }, platform: 'toy' });
+    const read = (fixtures: object): string => ((fixtures as Fixtures)['gadget'] as { wraps: { id(): string } }).wraps.id();
+
+    const hookBuiltIns = gadgetOf('hook');
+    const leaveHook = pool.enter(hookBuiltIns);
+    const hookPlan = planSuiteHook(target, suiteHook(chain, ['gadget']));
+    expect(hookPlan.scopes.get(chain[0]!)).toBe('worker');
+    expect(hookPlan.usesEngine).toBe(true);
+    const hook = bindFixtures({ plan: hookPlan, builtIns: hookBuiltIns, pool });
+    await hook.setUp();
+    expect(read(hook.fixtures)).toBe('hook');
+    leaveHook();
+
+    // One instance for the worker: the next attempt gets it, and what it wraps follows the attempt.
+    const attemptBuiltIns = gadgetOf('attempt');
+    pool.enter(attemptBuiltIns);
+    const bound = attempt(chain, ['gadget'], { pool, target, builtIns: attemptBuiltIns });
+    await bound.setUp();
+    expect((bound.fixtures as Fixtures)['gadget']).toBe((hook.fixtures as Fixtures)['gadget']);
+    expect(read(bound.fixtures)).toBe('attempt');
+    expect(bound.teardowns()).toEqual([]);
+    expect(log).toEqual(['setup:override']);
+    expect(pool.close().map(({ name, usesEngine }) => ({ name, usesEngine }))).toEqual([{ name: 'gadget', usesEngine: true }]);
+    // On an engine that isolates each attempt the same definition is a test fixture, which a suite hook cannot name.
+    expect(planAttempt(toyTarget(), testNaming(chain, ['gadget']), []).scopes.get(chain[0]!)).toBe('test');
+    expect(() => planSuiteHook(toyTarget(), suiteHook(chain, ['gadget']))).toThrow(planError('beforeAll hook names "gadget", a test fixture on target "toy"'));
+  });
+
+  it('refuses a declared scope that is not the scope of the fixture it extends, naming both', () => {
+    const worker = [wrapping([], 'app', 'override', { scope: 'worker' })];
+    expect(() => planAttempt(toyTarget(), testNaming(worker, ['app']), [])).toThrow(
+      planError(`fixture "app" is declared with scope 'worker', but it extends the built-in "app", a test fixture on target "toy": a fixture that extends another keeps its scope`),
+    );
+    expect(planAttempt(toyTarget('worker'), testNaming(worker, ['app']), []).scopes.get(worker[0]!)).toBe('worker');
+    const test = [wrapping([], 'gadget', 'override', { scope: 'test' })];
+    expect(() => planAttempt(toyTarget('worker'), testNaming(test, ['gadget']), [])).toThrow(planError(`declared with scope 'test', but it extends the built-in "gadget", a worker fixture on target "toy"`));
+    // A core fixture whose scope no engine changes is refused where it is declared.
+    const agent = [wrapping([], 'agent', 'override', { scope: 'worker' })];
+    expect(() => checkDeclaredFixtures(agent, agent)).toThrow(planError(`fixture "agent" is declared with scope 'worker', but it extends the built-in "agent", a test fixture: a fixture that extends another keeps its scope`));
+    const chained = [wrapping([], 'app', 'first', { scope: 'test' }), wrapping([], 'app', 'second', { scope: 'worker', layer: 1 })];
+    expect(() => checkDeclaredFixtures(chained, [chained[1]!])).toThrow(planError(`but it extends the fixture "app" of an earlier test.extend(), a test fixture`));
+    // Unused on a target where it could not be, it fails nothing.
+    expect(planAttempt(toyTarget(), testNaming(worker, []), []).order).toEqual([]);
+  });
+
+  it('fails on a target that lacks the built-in only when code there names it', () => {
+    const chain = [wrapping([], 'device', 'override')];
+    expect(planAttempt(toyTarget(), testNaming(chain, ['app']), []).order).toEqual([]);
+    expect(() => checkDeclaredFixtures(chain, chain)).not.toThrow();
+    expect(() => planAttempt(toyTarget(), testNaming(chain, ['device']), [])).toThrow(
+      planError('fixture "device" names "device": target "toy" has no "device" fixture; available: agent, app, gadget, platform, screen, session (engine toy contributes gadget)'),
+    );
   });
 });
 

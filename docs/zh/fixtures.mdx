@@ -82,6 +82,21 @@ export const test = base.extend<{ cleanData: void }>({
 
 使用 `{ scope: 'worker', auto: true }` 时，它在每个工作进程中运行一次。
 
+## 扩展内置测试夹具
+
+给测试夹具取一个内置测试夹具的名称（例如 `app` 或 `device`），即可在它前后运行代码。在函数内部，这个名称指内置测试夹具。列出该名称的测试和钩子会得到你传给 `use` 的值：
+
+```ts title="tests/fixtures.ts"
+export const test = base.extend({
+  device: async ({ device }, use) => {
+    await device.setPermission('camera', 'deny');
+    await use(device);
+  },
+});
+```
+
+该测试夹具沿用内置测试夹具的作用域。在移动端测试目标上，`device` 是工作进程测试夹具，因此它在每个工作进程中运行一次，`beforeAll` 也会得到它。参阅[扩展测试夹具](/reference/test#extending-a-fixture)。
+
 ## Share a fixture across a worker
 
 A worker fixture is set up one time per worker and target, by the first test

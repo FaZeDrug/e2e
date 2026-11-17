@@ -190,7 +190,12 @@ for its side effect takes `[fn, { auto: true }]`, set up for every test, or
 has no fixture for fails the run at collection with the file and line; a test
 skipped on that target (`platforms`, `requires`, `test.skipIf`) is not
 checked there. An `afterEach` that names a fixture whose setup failed is
-skipped. A worker
+skipped. A fixture named like one the `test` already has, built-in ones
+included, extends it (`app: async ({ app }, use) => { await app.open('/x');
+await use(app); }`, no type argument): inside it the name is the previous
+value, everyone else gets what it passes to `use`, and it keeps that
+fixture's type and scope (`device` on mobile: once per worker, `beforeAll`
+gets it; a different `scope` is `COLLECTION_ERROR`). A worker
 fixture (`[fn, { scope: 'worker' }]`, second type argument of `extend`) is
 set up once per worker and target by the first test or suite hook that names
 it, torn down when the worker ends, and sees worker fixtures only. Declare it in a module the test files import: a test

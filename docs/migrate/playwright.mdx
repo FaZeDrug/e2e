@@ -179,6 +179,7 @@ run only in a browser, so a test that uses it declares
 | `test.extend({ fixture })` | the same shape, set up on demand: a test, a hook, or a fixture gets the fixtures it names in its first parameter |
 | `[fn, { scope: 'worker' }]` fixtures | the same, typed with the second type argument of `extend` |
 | `[fn, { auto: true }]` fixtures | the same, in either scope |
+| Overriding a fixture, `page: async ({ page }, use) => {}` | the same for `app`, `screen`, `browser`, and your own fixtures, see [Extending a fixture](/reference/test#extending-a-fixture) |
 
 </Accordion>
 <Accordion title="CLI">

@@ -291,14 +291,32 @@ export function bindFixtures(options: BindOptions): BoundFixtures {
   const { target, scope } = plan;
   const values: Record<string, unknown> = {};
   const fixtures = gate(values, plan, builtIns);
+  // A built-in that a planned fixture extends is read through that fixture, once it is set up.
+  const extended = new Set(plan.order.map((definition) => definition.name));
   for (const name of builtInNames(target)) {
-    if (scope === 'worker' && builtInScope(target, name) === 'test') continue;
+    if (extended.has(name) || (scope === 'worker' && builtInScope(target, name) === 'test')) continue;
     Object.defineProperty(values, name, { enumerable: true, get: () => Reflect.get(builtIns, name) as unknown });
   }
   // What a worker fixture sees: the built-in worker fixtures and the worker
   // fixtures it names, set up before it.
-  const workerValues = pool.builtIns();
+  const workerBuiltIns = pool.builtIns();
+  const workerValues: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(workerBuiltIns)) if (!extended.has(name)) workerValues[name] = value;
   const workerFixtures = gate(workerValues, { ...plan, scope: 'worker' }, attemptlessBuiltIns(target));
+  /** The value each fixture handed over, by definition: a fixture that extends another reads that one's here. */
+  const provided = new Map<FixtureDefinition, unknown>();
+  /** Whether user code reads `definition` under its name: the last fixture of that name in the chain. */
+  const isLast = (definition: FixtureDefinition): boolean => plan.chain.findLast((each) => each.name === definition.name) === definition;
+  /**
+   * What `definition`'s function receives. One that names itself extends a
+   * fixture: its own name is the earlier fixture of that name, or the
+   * built-in as `original` reads it, never the override user code sees.
+   */
+  const fixturesFor = (definition: FixtureDefinition, shared: object, original: () => unknown): object => {
+    if (!fixtureNames(definition.fn, 'fixture').includes(definition.name)) return shared;
+    const base = plan.bases.get(definition);
+    return Object.create(shared, { [definition.name]: { enumerable: true, get: base === undefined ? original : () => provided.get(base) } }) as object;
+  };
 
   const active: FixtureTeardown[] = [];
   let abandoned = signal?.aborted === true;
@@ -316,15 +334,19 @@ export function bindFixtures(options: BindOptions): BoundFixtures {
 
   const setUpOne = async (definition: FixtureDefinition): Promise<void> => {
     const { name } = definition;
-    if (definition.scope === 'worker') {
-      const value = await pool.acquire(definition, workerFixtures, plan.engineBacked.has(definition));
+    if (plan.scopes.get(definition) === 'worker') {
+      const received = fixturesFor(definition, workerFixtures, () => workerBuiltIns[name]);
+      const value = await pool.acquire(definition, received, plan.engineBacked.has(definition));
+      provided.set(definition, value);
+      if (!isLast(definition)) return;
       Object.defineProperty(workerValues, name, { value, enumerable: true });
       define(name, value);
       return;
     }
-    await startFixture(definition, fixtures, (value, teardown) => {
+    await startFixture(definition, fixturesFor(definition, fixtures, () => Reflect.get(builtIns, name) as unknown), (value, teardown) => {
       if (abandoned) return false;
-      define(name, value);
+      provided.set(definition, value);
+      if (isLast(definition)) define(name, value);
       active.push(teardown);
       return true;
     });
@@ -364,7 +386,8 @@ function gate(values: Record<string, unknown>, plan: FixturePlan, builtIns: obje
         return Reflect.get(own, property, receiver) as unknown;
       }
       const definition = declared.get(property);
-      const fixtureScope = definition?.scope ?? (builtInNames(target).includes(property) ? builtInScope(target, property) : undefined);
+      const builtInScopeHere = builtInNames(target).includes(property) ? builtInScope(target, property) : undefined;
+      const fixtureScope = definition === undefined ? builtInScopeHere : (plan.scopes.get(definition) ?? definition.scope ?? builtInScopeHere ?? 'test');
       if (scope === 'worker' && fixtureScope === 'test') {
         throw new ConfigurationError(
           'UNSUPPORTED_CAPABILITY',

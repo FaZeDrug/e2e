@@ -767,7 +767,7 @@ test.extend<{ owner: string; member: string }>({
     await use(String(nobody));
   },
 });
-// @ts-expect-error a core fixture cannot be redefined
+// @ts-expect-error a built-in fixture is not a new fixture: it cannot be declared with another type
 test.extend<{ agent: string }>({ agent: async ({}, use) => { await use('x'); } });
 // @ts-expect-error the value handed to use() has the declared fixture type
 test.extend<{ count: number }>({ count: async ({}, use) => { await use('one'); } });
@@ -839,6 +839,36 @@ deviceTest.beforeAll(async ({ device, app, screen: deviceScreen }) => {
   await app.open();
   void deviceScreen;
 });
+
+// A fixture named like a built-in extends it: its own name is the built-in, and it keeps the built-in's type and scope.
+test.extend({ app: async ({ app, screen: s }, use) => { void s; await app.open('/'); await use(app); } })('opens first', async ({ app }) => {
+  await app.open('/next');
+});
+test.extend({ screen: [async ({ screen: s }, use) => { await use(s); }, { scope: 'test' }] });
+// @ts-expect-error an override hands over the built-in's type
+test.extend({ app: async ({}, use) => { await use('not an app'); } });
+// @ts-expect-error app is a test fixture on this test: its override cannot be a worker fixture
+test.extend({ app: [async ({ app }, use) => { await use(app); }, { scope: 'worker' }] });
+// platform is a worker fixture everywhere, so its override sees worker fixtures only.
+test.extend({ platform: async ({ platform }, use) => { await use(platform.toUpperCase()); } });
+// @ts-expect-error a worker fixture's override does not see test fixtures
+test.extend({ platform: async ({ platform, app }, use) => { void app; await use(platform); } });
+// On an engine whose state outlives a test, device, app, and screen are worker fixtures, and so are their overrides.
+deviceTest.extend({ device: async ({ device }, use) => { await device.reset(); await use(device); } }).beforeAll(async ({ device }) => {
+  await device.reset();
+});
+deviceTest.extend({ app: [async ({ app }, use) => { await use(app); }, { scope: 'worker' }] });
+// @ts-expect-error a worker fixture's override cannot be a test fixture
+deviceTest.extend({ device: [async ({ device }, use) => { await use(device); }, { scope: 'test' }] });
+// @ts-expect-error a worker fixture's override does not see test fixtures
+deviceTest.extend({ device: async ({ device, agent: testAgent }, use) => { void testAgent; await use(device); } });
+// With type arguments for new fixtures, an override sits beside them and sees them.
+test.extend<{ draft: string }>({
+  draft: async ({ app }, use) => { void app; await use('draft'); },
+  app: async ({ app, draft }, use) => { await app.open(`/${draft}`); await use(app); },
+});
+// A fixture of an earlier extend is extended the same way.
+withWorkspace.extend({ workspace: async ({ workspace }, use) => { await use(workspace); } });
 
 // A test, a group, and a call each pin a configured agent by name.
 test('as the buyer', { agent: 'buyer' }, async () => {});

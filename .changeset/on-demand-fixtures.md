@@ -13,6 +13,6 @@ To migrate:
 
 A fixture can now name the fixtures declared beside it in the same `test.extend()` call, in any order; a cycle is a `COLLECTION_ERROR` naming it.
 
-These mistakes fail at collection, before any engine starts, with the file and line of the code: a fixture name the target does not have (it was `UNSUPPORTED_CAPABILITY` in the test), a `beforeAll`, `afterAll`, or worker fixture that names a test fixture (it was `HOOK_FAILED`), and a `test.extend()` fixture named like one the target's engine contributes (it was `TEST_SETUP_FAILED`). A test that does not run on a target (`platforms`, `requires`, `test.skipIf`) is not checked there.
+These mistakes fail at collection, before any engine starts, with the file and line of the code: a fixture name the target does not have (it was `UNSUPPORTED_CAPABILITY` in the test), and a `beforeAll`, `afterAll`, or worker fixture that names a test fixture (it was `HOOK_FAILED`). A test that does not run on a target (`platforms`, `requires`, `test.skipIf`) is not checked there.
 
 An `afterEach` hook that names a fixture whose setup failed is skipped. On an engine with `isolation: 'worker'`, a suite hook or a worker fixture teardown that names no engine fixture, `app`, or `screen` opens no engine attempt.

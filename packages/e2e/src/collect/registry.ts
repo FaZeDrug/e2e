@@ -14,7 +14,6 @@ import { markRunningTestExpectedToFail } from '@e2e-dev/core/lib/internal/expect
 import { parseModifierCall, skipRunningTest } from '../internal/skip.ts';
 import { unknownKeyMessage } from '@e2e-dev/core/lib/internal/options';
 import type { SourceLocation } from '@e2e-dev/core/lib/internal/source';
-import { CORE_FIXTURES } from '@e2e-dev/core/lib/run/fixtures';
 import { fixtureNames } from './fixture-names.ts';
 import { checkDeclaredFixtures } from './fixture-plan.ts';
 import type {
@@ -48,12 +47,18 @@ export type TestBody = TestHookFn<object>;
  * One fixture a `test.extend()` call defined: its name, its setup/teardown
  * function, and how long one instance lives. The object is the fixture's
  * identity: a worker keeps one instance per definition. The fixtures it
- * depends on are the ones its function names (`fixtureNames`).
+ * depends on are the ones its function names (`fixtureNames`). One named
+ * like a built-in fixture, or like an earlier fixture of its chain, extends
+ * it: inside its function its own name is the fixture it extends.
  */
 export interface FixtureDefinition {
   readonly name: string;
   readonly fn: FixtureFn<object, unknown>;
-  readonly scope: FixtureScope;
+  /**
+   * The scope it declares. A plain function declares none: it has the scope
+   * of the fixture it extends, and is a test fixture when it extends none.
+   */
+  readonly scope: FixtureScope | undefined;
   /** Set up for every test (or once per worker) whether or not anything names it. */
   readonly auto: boolean;
   /**
@@ -622,11 +627,12 @@ function normalizeArgs(
 }
 
 /**
- * Checks one `test.extend()` argument against the chain it extends. Names
- * and what each function names are validated here, at import time, so a
- * typo, a clash, or a cycle fails the file before any attempt runs; the
- * engine's own fixtures are only known per target and are checked when a
- * test that runs there is selected (`assertFixtureUse`).
+ * Checks one `test.extend()` argument against the chain it extends. What
+ * each function names is validated here, at import time, so a cycle or a
+ * scope that cannot be fails the file before any attempt runs; the engine's
+ * own fixtures are only known per target and are checked when a test that
+ * runs there is selected (`assertFixtureUse`). A name the chain or the
+ * target already has extends that fixture.
  */
 function validateFixtureDefinitions(
   definitions: unknown,
@@ -643,24 +649,12 @@ function validateFixtureDefinitions(
       'test.extend() takes a plain object of fixture definitions, one function per fixture name',
     );
   }
-  const taken = new Set(chain.map((definition) => definition.name));
   const added: FixtureDefinition[] = [];
   const layer = (chain.at(-1)?.layer ?? -1) + 1;
   // The innermost frame outside the runner: the `test.extend()` call itself, wherever a test file imports it from.
   const source = captureSource(undefined);
   for (const [name, fn] of Object.entries(definitions)) {
     if (name === '') throw new CollectionError('test.extend(): a fixture name must not be empty');
-    if (Object.hasOwn(CORE_FIXTURES, name)) {
-      throw new CollectionError(
-        `test.extend(): "${name}" is a core fixture and cannot be redefined`,
-      );
-    }
-    if (taken.has(name)) {
-      throw new CollectionError(
-        `test.extend(): fixture "${name}" is already defined by an earlier test.extend()`,
-      );
-    }
-    taken.add(name);
     added.push({ name, ...fixtureDefinition(name, fn), layer, source });
   }
   checkDeclaredFixtures([...chain, ...added], added);
@@ -670,7 +664,7 @@ function validateFixtureDefinitions(
 /** The function, scope, and `auto` of one `test.extend()` entry: `fn`, or `[fn, { scope, auto }]`. */
 function fixtureDefinition(name: string, entry: unknown): Pick<FixtureDefinition, 'fn' | 'scope' | 'auto'> {
   const shape = `test.extend(): fixture "${name}" must be a function ({ ...fixtures }, use) => Promise<void>, or [fn, { scope: 'test' | 'worker', auto: boolean }]`;
-  if (typeof entry === 'function') return { fn: entry as FixtureFn<object, unknown>, scope: 'test', auto: false };
+  if (typeof entry === 'function') return { fn: entry as FixtureFn<object, unknown>, scope: undefined, auto: false };
   if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'function') throw new CollectionError(shape);
   const options: unknown = entry[1];
   if (typeof options !== 'object' || options === null || Array.isArray(options)) throw new CollectionError(shape);
@@ -683,7 +677,7 @@ function fixtureDefinition(name: string, entry: unknown): Pick<FixtureDefinition
   if (auto !== undefined && typeof auto !== 'boolean') {
     throw new CollectionError(`test.extend(): fixture "${name}" auto must be true or false, got ${describeValue(auto)}`);
   }
-  return { fn: entry[0] as FixtureFn<object, unknown>, scope: scope ?? 'test', auto: auto ?? false };
+  return { fn: entry[0] as FixtureFn<object, unknown>, scope: scope as FixtureScope | undefined, auto: auto ?? false };
 }
 
 /**

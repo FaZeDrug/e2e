@@ -49,3 +49,14 @@ export const todosTest = test.extend<{ todosPage: void; unnamed: string }>({
     await use('unnamed');
   },
 });
+
+/**
+ * `test` whose `app` is extended: inside the fixture `app` is the built-in
+ * one, and a test that names `app` starts on the todos page.
+ */
+export const onTodos = base.extend({
+  app: async ({ app }, use) => {
+    await app.open('/todos');
+    await use(app);
+  },
+});

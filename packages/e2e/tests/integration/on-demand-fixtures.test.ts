@@ -352,11 +352,6 @@ export const test = base.extend<{ gadget: unknown; workspace: string }, { databa
       `${IMPORT}const extended = test.extend<{}, { keeper: string }>({\n  keeper: [async ({ gadget }, use) => { await use(String(gadget)); }, { scope: 'worker' }],\n});\nextended('one', ({ keeper }) => void keeper);\n`,
       'worker fixture "keeper" names "gadget", a test fixture on target "fake": beforeAll, afterAll, and worker fixtures see worker fixtures only, since a test fixture is set up for one test. Use it in beforeEach, or save the state it builds with test.setup()',
     ],
-    [
-      'a chain fixture named like one the engine contributes',
-      `${IMPORT}const extended = test.extend({ gadget: use } as never);\nextended('one', () => {});\n`,
-      'fixture "gadget" is contributed by engine fake on target "fake"; test.extend() cannot redefine it',
-    ],
   ])('%s', async (_, source, message) => {
     const { errors, events, exitCode, results } = await collect({ 'tests/a.e2e.ts': source });
     expect(errors).toEqual(collectionError(message));
@@ -375,7 +370,7 @@ export const test = base.extend<{ gadget: unknown; workspace: string }, { databa
     expect(whole.errors).toEqual(collectionError('fixture "workspace" must destructure its first parameter, as in ({ app, screen }) => {}; it takes "fixtures". e2e sets up only the fixtures a function names there', 'tests/fixtures.ts'));
     const cycle = await collect(declares(`{\n  a: async ({ b }: { b: string }, use: (value: string) => Promise<void>) => use(b),\n  b: async ({ a }: { a: string }, use: (value: string) => Promise<void>) => use(a),\n}`));
     expect(cycle.errors).toEqual(collectionError('fixtures depend on each other in a cycle: "a" -> "b" -> "a". A fixture cannot name one that needs it', 'tests/fixtures.ts'));
-    const scope = await collect(declares(`{\n  page: async ({}: object, use: (value: string) => Promise<void>) => use('p'),\n  cache: [async ({ page }: { page: string }, use: (value: string) => Promise<void>) => use(page), { scope: 'worker' }],\n}`));
+    const scope = await collect(declares(`{\n  page: [async ({}: object, use: (value: string) => Promise<void>) => use('p'), { scope: 'test' }],\n  cache: [async ({ page }: { page: string }, use: (value: string) => Promise<void>) => use(page), { scope: 'worker' }],\n}`));
     expect(scope.errors).toEqual(collectionError('worker fixture "cache" names "page", a test fixture: beforeAll, afterAll, and worker fixtures see worker fixtures only, since a test fixture is set up for one test. Use it in beforeEach, or save the state it builds with test.setup()', 'tests/fixtures.ts'));
     for (const { events } of [whole, cycle, scope]) expect(events).toEqual([]);
   }, 120_000);
