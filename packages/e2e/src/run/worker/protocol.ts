@@ -15,7 +15,7 @@ import type { DebugSnapshot } from '@e2e-dev/core/lib/internal/debug';
 import type { SerializedError } from '@e2e-dev/core/lib/internal/errors';
 import type { AttemptRecord, ResultRecord, RunError, SerialAttemptRecord, SerialGroupRecord, SerialMemberRecord, WireResultRecord } from '@e2e-dev/core/lib/run/records';
 import type { SerialAttemptStart } from '../serial.ts';
-import type { HeldStep, StepHolding } from '../step-hold.ts';
+import type { HeldStep } from '../step-hold.ts';
 import type { StepProgress } from '@e2e-dev/core/lib/run/steps';
 
 /** One runnable pair on the wire; the worker resolves the test function. */
@@ -73,8 +73,8 @@ export interface WorkerBootstrap {
   readonly debug: boolean;
   /** Whether the worker should record model calls for `--ai-trace`. */
   readonly aiTrace: boolean;
-  /** How each top-level step waits for the runner's `step-release` (`e2e run --step`); undefined when steps never wait. */
-  readonly step: StepHolding | undefined;
+  /** Whether each top-level step waits for the runner's `step-release` (`e2e run --step`). */
+  readonly holdSteps: boolean;
 }
 
 export interface RunUnitMessage {
@@ -139,7 +139,25 @@ export interface StepReleaseMessage {
   readonly holdId: string;
 }
 
-export type MainToWorker = RunUnitMessage | InterruptMessage | ShutdownMessage | TerminateMessage | PingMessage | StepReleaseMessage;
+/**
+ * A request to read the screen at the held step named by `holdId`. The
+ * worker handles it right away, like `step-release`, then sends a
+ * `screen-reply`.
+ */
+export interface ScreenRequestMessage {
+  readonly type: 'screen-request';
+  readonly holdId: string;
+  readonly requestId: string;
+}
+
+export type MainToWorker =
+  | RunUnitMessage
+  | InterruptMessage
+  | ShutdownMessage
+  | TerminateMessage
+  | PingMessage
+  | StepReleaseMessage
+  | ScreenRequestMessage;
 
 export interface ReadyMessage {
   readonly type: 'ready';
@@ -243,6 +261,16 @@ export interface StepHoldMessage {
   readonly type: 'step-hold';
   readonly holdId: string;
   readonly step: HeldStep;
+}
+
+/**
+ * The reply to `screen-request`. The `screen` field is absent if it couldn't
+ * be read or the wait had ended.
+ */
+export interface ScreenReplyMessage {
+  readonly type: 'screen-reply';
+  readonly requestId: string;
+  readonly screen?: string;
 }
 
 /** The hold `holdId` names ended without a release: its step was abandoned, or its attempt ended. */
@@ -354,6 +382,7 @@ export type WorkerToMain =
   | PongMessage
   | StepHoldMessage
   | StepCancelMessage
+  | ScreenReplyMessage
   | OutputMessage
   | NoticeMessage
   | ResultMessage
