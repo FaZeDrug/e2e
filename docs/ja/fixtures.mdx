@@ -97,12 +97,9 @@ export const test = base.extend({
 
 このフィクスチャは、[組み込みフィクスチャのスコープ](/reference/test#fixtures)を引き継ぎます。モバイルターゲットでは `device` はワーカーフィクスチャなので、この例はワーカーごとに 1 回実行され、`beforeAll` にも渡されます。[フィクスチャの拡張](/reference/test#extending-a-fixture)を参照してください。
 
-## Share a fixture across a worker
+## ワーカー内でフィクスチャを共有する
 
-A worker fixture is set up one time per worker and target, by the first test
-or suite hook that names it, and torn down when the worker ends. Use one for a
-database, a server, or an API client that many tests share. Declare it with `{ scope: 'worker' }` and type it with the second
-type argument:
+ワーカーフィクスチャは、ワーカーとターゲットの組ごとに 1 回だけセットアップされます。セットアップするのは、それを最初に指定したテストまたはスイートのフックで、後処理はワーカーの終了時に実行されます。多くのテストが共有するデータベース、サーバー、API クライアントに使ってください。`{ scope: 'worker' }` を付けて宣言し、2 番目の型引数で型を指定します。
 
 ```ts title="tests/fixtures.ts"
 export const test = base.extend<{}, { database: Database }>({
@@ -114,14 +111,9 @@ export const test = base.extend<{}, { database: Database }>({
 });
 ```
 
-A worker fixture outlives every test, so it sees worker fixtures only: its
-own kind, and the [built-in fixtures](/reference/test#fixtures) whose scope is
-worker on the target.
+ワーカーフィクスチャはどのテストよりも長く存続するため、参照できるのはワーカーフィクスチャだけです。つまり、他のワーカーフィクスチャと、そのターゲットでスコープがワーカーになる[組み込みフィクスチャ](/reference/test#fixtures)です。
 
-Declare it in a module your test files import, not in a test file. A test
-file loads again after a failed test and for each serial group and setup test,
-and a worker fixture it declares gets a
-new instance each time. The old instance stays set up until the worker ends.
+ワーカーフィクスチャは、テストファイルではなく、テストファイルがインポートするモジュールで宣言してください。テストファイルは、テストの失敗後や、直列実行グループ、セットアップテストごとに再び読み込まれ、そのファイルで宣言したワーカーフィクスチャはそのたびに新しいインスタンスになります。古いインスタンスは、ワーカーが終了するまでセットアップされたまま残ります。
 
 ## フックからフィクスチャを参照する
 

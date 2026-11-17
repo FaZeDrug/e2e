@@ -162,10 +162,13 @@ test('checkout', async ({ app, agent, screen }) => {
 | `import { test, expect } from '@playwright/test'` | `import { test } from '@e2e-dev/web'` と `import { expect } from 'e2e'` |
 | テストの `{ page }` | `{ screen, app, browser }` |
 | `test()`, `test.describe()`, `test.only`, `test.fail()`, `test.skip(title, fn)`, `test.skip(condition, reason)` | 同じ。条件付きの `skip` はテスト本体または `beforeEach` 内で利用可能 |
-| `beforeEach`, `afterEach`, `beforeAll`, `afterAll` | 同じ。ただしタイトルなし。`beforeAll` と `afterAll` のフィクスチャは `platform` のみ |
+| `beforeEach`, `afterEach`, `beforeAll`, `afterAll` | 同じ。ただしタイトルなし。`beforeAll` と `afterAll` が受け取るのはワーカーフィクスチャで、`browser`、`app`、`screen` は受け取らない |
 | `test.describe.skip`, `test.describe.serial`, `describe.configure({ mode: 'serial', retries, timeout })` | `test.describe(title, { skip, serial, retries, timeout }, fn)` |
 | `{ tag: '@smoke' }` | テストまたはグループの `{ tags: ['smoke'] }` |
-| `test.extend({ fixture })` | 同じ形式。別のフィクスチャに依存するものは、次の `extend` を連結 |
+| `test.extend({ fixture })` | 同じ形式で、必要に応じてセットアップ。テスト、フック、フィクスチャは、最初の引数で指定したフィクスチャを受け取る |
+| `[fn, { scope: 'worker' }]` のフィクスチャ | 同じ。`extend` の 2 番目の型引数で型を指定 |
+| `[fn, { auto: true }]` のフィクスチャ | 同じ。どちらのスコープでも利用可能 |
+| フィクスチャのオーバーライド、`page: async ({ page }, use) => {}` | `app`、`screen`、`browser`、独自のフィクスチャで同じ。[フィクスチャの拡張](/reference/test#extending-a-fixture)を参照 |
 
 </Accordion>
 <Accordion title="CLI">
@@ -217,7 +220,7 @@ export const test = base.extend<{ accountPage: AccountPage }>({
 });
 ```
 
-`browser` を使うフィクスチャは、その `test` から登録するすべてのテストを Web 専用にします。[移植性を保つ](/page-object-model#keep-it-portable)を参照してください。各試行は新しいコンテキストで始まるため、フックから `newPage()` と `page.close()` を削除します。
+`browser` を指定するフィクスチャは、それを使うすべてのテストを Web 専用にします。[移植性を保つ](/page-object-model#keep-it-portable)を参照してください。各試行は新しいコンテキストで始まるため、フックから `newPage()` と `page.close()` を削除します。
 
 ## e2e にまだない機能
 
@@ -271,7 +274,7 @@ export const test = base.extend<{ accountPage: AccountPage }>({
 | `test.step()`, `testInfo.attach()` | 各呼び出しがすでにレポート上の名前付きステップ。`app.screenshot(label)` で画像を添付 |
 | `test.info()`、フックやフィクスチャの `testInfo`、`annotations` | 独自のフィクスチャやモジュールの状態。タイトルやタグに issue ID |
 | `fullyParallel`, `describe.configure({ mode: 'parallel' })` | ファイルを分割。ファイル間は並列、同じファイルのテストは順番に実行 |
-| 遅延取得、ワーカースコープ、`{ auto: true }` のフィクスチャ、`mergeTests()` | フィクスチャ群ごとに 1 つの `test`。ファイル単位の準備には `beforeAll` |
+| `mergeTests()` | `extend` 呼び出しを 1 本のチェーンにまとめる |
 | `globalSetup`、`globalTeardown`、`webServer` の配列 | 実行の前後を囲むスクリプト、または全プロセスを起動する 1 つの `app.command` |
 | `projects[].testMatch`, `testDir`, `testIgnore`, `grep` | テストの `platforms` やタグ、またはターゲットごとに別の実行 |
 | `--ui`, `npx playwright show-report`, `--reporter html` | `--watch --headed`。`htmlReporter()` が作る `.e2e/report.html` を開く |

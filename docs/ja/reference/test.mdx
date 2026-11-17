@@ -41,7 +41,7 @@ describe('checkout', { tags: ['billing'] }, () => {
 
 `describe` と 4 つのフックはトップレベルからもエクスポートされます。`test.describe`、`test.beforeEach` などと同じ関数です。`import { describe, beforeEach, test } from 'e2e'` のように使えます。
 
-- `e2e` からインポートしたテストごとのフックには、コアのフィクスチャの型が付きます。
+- `e2e` からインポートしたテストごとのフックには、すべてのエンジンが持つ[組み込みフィクスチャ](#fixtures)の型が付きます。
 - `@e2e-dev/web` と `@e2e-dev/mobile` は、それぞれ `browser` または `device` フィクスチャの型を付けた `test`、`describe`、4 つのフックをエクスポートします。テストファイルは 1 つのインポート元から登録できます。
 - 独自のフィクスチャで拡張した `test` では、`test.beforeEach` を通して登録したフックから、それらのフィクスチャを使えます。
 
@@ -218,8 +218,9 @@ import type { Device } from '@e2e-dev/mobile';
 export const test = base.extend<{ device: Device }>(); // types only
 ```
 
-- 引数なしの `extend` は型だけを絞り込みます。実行時には同じ `test` を返し、エンジンが提供するフィクスチャの型を付けます。実行時のフィクスチャは、引き続きターゲットのエンジンから解決します。グローバルな `declare module` による拡張なしで、デバイス、デスクトップ、Web の API に型を付けられます。
+- 引数なしの `extend` は型だけを絞り込みます。実行時には同じ `test` を返し、エンジンが提供する組み込みフィクスチャの型を付けます。実行時のフィクスチャは、引き続きターゲットのエンジンから解決します。グローバルな `declare module` による拡張なしで、デバイス、デスクトップ、Web の API に型を付けられます。
 - 定義を渡すと、独自のフィクスチャを追加します。[独自のフィクスチャ](#your-own-fixtures)を参照してください。
+- 1 番目の型引数は、テストフィクスチャの型を指定します。2 番目の型引数は、[ワーカーフィクスチャ](#worker-fixtures)の型を指定します。ワーカーフィクスチャは `beforeAll` と `afterAll` からも参照できます。`@e2e-dev/mobile` は、`device`、`app`、`screen` の型をそこに指定しています。
 
 #### `describe`
 
@@ -293,11 +294,28 @@ test.beforeAll(async ({ database, device }) => {
 });
 ```
 
-モジュールは、リトライ、直列実行グループ、セットアップテストごとに再インポートされるため、それぞれで `beforeAll` が再び実行されます。利用できるフィクスチャは `platform` だけです。
+モジュールは、リトライ、直列実行グループ、セットアップテストごとに再インポートされるため、それぞれで `beforeAll` が再び実行されます。
+
+受け取るのは[ワーカーフィクスチャ](#worker-fixtures)だけです。
+
+- そのターゲットでスコープがワーカーになる[組み込みフィクスチャ](#fixtures)。`platform` と、モバイルターゲットでは `device`、`app`、`screen` です。
+- フックの登録に使った `test` のワーカーフィクスチャ。フックが指定したものと、`auto: true` で宣言したものをセットアップします。
+
+ブラウザターゲットでは、`browser`、`app`、`screen` はテストフィクスチャです。UI のセットアップは `beforeEach` に置いてください。
+
+モバイルターゲットでは、次のように動作します。
+
+- テストが入るスコープの `beforeAll` フックは、専用の短いエンジン試行 1 回の中でまとめて実行します。この試行は何も起動しません。テストが出るスコープの `afterAll` フックも同様です。
+- この試行は、`device`、`app`、`screen` のいずれか、またはそのいずれかを指定するワーカーフィクスチャを指定した最初のフックのために開きます。どれも指定しないフックは、試行を開きません。
+- 直列実行グループ、または `e2e mcp` セッションが実行するテストでは、フックはすでに開いている試行の上で実行します。
+- その試行を開けない場合や、実行が中断された場合も、フックは実行します。その場合、`device`、`app`、`screen` を読み取ると、理由を示す例外をスローします。試行を開けなかった失敗は、フェーズ `launch` の 1 件の実行エラーになります。
+
+スイートのフックが実行したステップは、どのテストの記録にも含まれません。失敗には、フックのスコープを示します。
 
 | エラー | 発生条件 |
 | --- | --- |
 | `HOOK_FAILED` | フックが例外をスローした場合。スイートのテストは原因 `hook-failed` でスキップされます。直列実行グループ内では、残りの全メンバーをスキップし、リトライせずにグループを失敗させます。 |
+| `COLLECTION_ERROR` | フックがテストフィクスチャを指定した場合。メッセージにそのフィクスチャとフックの行を示し、テストはひとつも実行されません。 |
 
 #### `afterAll`
 
@@ -309,7 +327,7 @@ afterAll(async () => {
 });
 ```
 
-失敗によって破棄する実行領域では、`beforeAll` が開始したすべてのスコープで `afterAll` を実行します。利用できるフィクスチャは `platform` だけです。例外をスローすると、[`beforeAll`](#beforeall) と同じく `HOOK_FAILED` になります。
+失敗によって破棄する実行領域では、`beforeAll` が開始したすべてのスコープで `afterAll` を実行します。[`beforeAll`](#beforeall) と同じフィクスチャを受け取り、`cleanupTimeout` 以内に完了する必要があります。例外をスローすると、`beforeAll` と同じく `HOOK_FAILED` になります。
 
 #### イベントループのブロック
 
@@ -428,7 +446,7 @@ test('onboarding asks for the camera', { requires: ['native-app'] }, async ({ ap
 指定できる値は次のとおりです。
 
 - ターゲットのエンジンが提供するハーネスの機能: `observation`、`actions`、`location`、`pointer`、`keyboard`、`computed-style`、`state`、`artifacts`。
-- 提供するフィクスチャごとの値: `browser`、`device`。[エンジンの契約](/reference/engine#engine)を参照してください。
+- エンジンが提供する組み込みフィクスチャごとの値: `browser`、`device`。[エンジンの契約](/reference/engine#engine)を参照してください。
 - ターゲットが宣言するアプリの種類: `app.url` なら `browser`、`app.bundleId` または `app.appPath` なら `native-app`。
 
 #### `session`
@@ -613,11 +631,9 @@ test('renames the workspace', async ({ workspace, screen }) => {
 テスト本体やフックが `timeout` に達した場合、処理自体はキャンセルせず、完了を待たなくなります。そのため、まだ動いている間に後処理が始まることがあります。このように待機を打ち切られた準備処理が後から `use` に到達すると、直ちに解決します。その後処理は実行全体から切り離して動くため、確保したリソースは解放されます。打ち切られた準備処理やフックが後から完了しても、後続のフィクスチャ、フック、テスト本体は開始しません。
 </Note>
 
-#### Worker fixtures
+#### ワーカーフィクスチャ
 
-A worker fixture has one instance per worker and target. Declare it as
-`[fn, { scope: 'worker' }]` and type it with the second type argument of
-`extend`:
+ワーカーフィクスチャは、ワーカーとターゲットの組ごとに 1 つのインスタンスを持ちます。`[fn, { scope: 'worker' }]` として宣言し、`extend` の 2 番目の型引数で型を指定します。
 
 ```ts
 export const test = base.extend<{}, { database: Database }>({
@@ -629,32 +645,17 @@ export const test = base.extend<{}, { database: Database }>({
 });
 ```
 
-- Setup runs the first time a test or suite hook names it, or names a
-  fixture that names it, inside that test's or hook's timeout. A failed setup
-  fails that test or hook, and the next one sets the fixture up again.
-- `[fn, { scope: 'worker', auto: true }]` sets it up for the first test or
-  suite hook registered through its `test`, named or not.
-- Teardown runs when the worker ends, before the engine is disposed, last set
-  up first. Each teardown has `cleanupTimeout`. One that throws is a run error
-  in phase `cleanup`.
-- It sees worker fixtures only: the [built-in fixtures](#fixtures) whose
-  scope is worker on the target, the worker fixtures of the `test` it extends,
-  and the ones declared beside it. Naming a test fixture is
-  `COLLECTION_ERROR`.
-- On a mobile target its `device`, `app`, and `screen` act in the test or
-  hook that is running when it calls them. Its teardown can still drive the
-  device: it runs in a short engine attempt when the fixture names one of
-  them, and without one when it names none.
-- A worker keeps one instance per definition. A test file is imported again
-  after a failed test and for each serial group and setup test, so a worker
-  fixture the file declares gets a new instance each time, and the old one
-  stays set up until the worker ends.
-  Declare worker fixtures in a module the file imports.
-- `extend({ ... })` without type arguments infers test fixtures only.
+- セットアップは、テストまたはスイートのフックが、そのフィクスチャか、それを指定するフィクスチャを初めて指定したときに、そのテストまたはフックのタイムアウト内で実行します。セットアップに失敗すると、そのテストまたはフックが失敗し、次のテストまたはフックが改めてセットアップします。
+- `[fn, { scope: 'worker', auto: true }]` は、指定の有無にかかわらず、その `test` から登録した最初のテストまたはスイートのフックでセットアップします。
+- 後処理は、ワーカーの終了時、エンジンを破棄する前に、最後にセットアップしたものから順に実行します。それぞれに `cleanupTimeout` があります。例外をスローした後処理は、フェーズ `cleanup` の実行エラーになります。
+- 参照できるのはワーカーフィクスチャだけです。そのターゲットでスコープがワーカーになる[組み込みフィクスチャ](#fixtures)、拡張元の `test` のワーカーフィクスチャ、同じ呼び出しで宣言したワーカーフィクスチャです。テストフィクスチャを指定すると `COLLECTION_ERROR` になります。
+- モバイルターゲットでは、ワーカーフィクスチャが受け取った `device`、`app`、`screen` は、呼び出した時点で実行中のテストまたはフックの中で動作します。後処理でもデバイスを操作できます。フィクスチャがそのいずれかを指定している場合、後処理は短いエンジン試行の中で実行し、どれも指定していない場合は試行なしで実行します。
+- ワーカーは、定義ごとに 1 つのインスタンスを保持します。テストファイルは、テストの失敗後や、直列実行グループ、セットアップテストごとに再インポートされるため、そのファイルで宣言したワーカーフィクスチャはそのたびに新しいインスタンスになり、古いインスタンスはワーカーが終了するまでセットアップされたまま残ります。ワーカーフィクスチャは、ファイルがインポートするモジュールで宣言してください。
+- 型引数なしの `extend({ ... })` は、テストフィクスチャだけを推論します。
 
 #### フィクスチャの拡張
 
-`test` がすでに持つフィクスチャと同じ名前の定義は、そのフィクスチャを拡張します。組み込みフィクスチャ（`agent`、`app`、`screen`、`platform`、`session`、`browser`、`device`）でも、前の `extend` のフィクスチャでも拡張できます。
+`test` がすでに持つフィクスチャと同じ名前の定義は、そのフィクスチャを拡張します。[組み込みフィクスチャ](#fixtures)でも、前の `extend` のフィクスチャでも拡張できます。
 
 ```ts
 export const test = base.extend({
@@ -668,7 +669,7 @@ export const test = base.extend({
 - 関数の中では、自身の名前は拡張元のフィクスチャを指します。組み込みフィクスチャ、または同じ名前の前のフィクスチャです。自身の名前を指定しない関数は、そのフィクスチャを置き換えます。
 - そのフィクスチャを指定したテスト、フック、ほかのフィクスチャは、`use` に渡した値を受け取ります。ランナー自身による組み込みフィクスチャの扱いは変わりません。
 - 必要に応じて、そのフィクスチャを指定したコードのためにセットアップします。
-- ターゲット上での拡張元のスコープを引き継ぎます。`device` はワーカーフィクスチャなので、その拡張はワーカーごとに 1 回実行され、`beforeAll` にも渡されます。`app` は、Web ターゲットではテストフィクスチャ、モバイルターゲットではワーカーフィクスチャです。オプションの `scope` は、そのスコープと同じでなければなりません。
+- ターゲット上での拡張元のスコープを引き継ぎます。スコープは[組み込みフィクスチャ](#fixtures)の表のとおりです。`device` はワーカーフィクスチャなので、その拡張はワーカーごとに 1 回実行され、`beforeAll` にも渡されます。オプションの `scope` は、そのスコープと同じでなければなりません。
 - 型も引き継ぎます。型引数なしで定義してください。`extend` の型引数は、新しいフィクスチャのためのものです。
 - その名前のフィクスチャがないターゲットでは、そこで実行するコードが指定するまで何も失敗しません。指定すると、ターゲットにそのフィクスチャがないため、収集時に実行が失敗します。
 

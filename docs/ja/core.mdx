@@ -38,7 +38,7 @@ bun add @e2e-dev/core @e2e-dev/web
 
 `launch` はエンジンを準備し、ホストを返します。
 セッションは、そのホスト上の独立したブラウザコンテキストです。
-`screen`、`app`、`platform` と、エンジン固有のフィクスチャ（ここでは `browser`）を持ちます。
+組み込みフィクスチャの `screen`、`app`、`platform` と、エンジンが提供するフィクスチャ（ここでは `browser`）を持ちます。
 
 ```ts title="prices.ts"
 import { launch } from '@e2e-dev/core';
