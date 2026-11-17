@@ -85,7 +85,7 @@ export class AgentError extends Error {
 | `SECRET_UNAVAILABLE` | 运行期间，`Secret` 或 `secrets.get()` 指定了 `config.secrets` 中不存在的机密值，机密值提供方未返回至少 6 个字符（码点）的字符串，或引擎解析了未在其 `secrets` 中声明的机密值。也包括 `host.secret(name)`（`@e2e-dev/core`）指定了未传给 `launch` 的机密值 | configuration | 2 |
 | `ENVIRONMENT_UNAVAILABLE` | 被测环境中应用之外的部分宕机或无法访问（blocked: environment） | infrastructure | 3 |
 | `SEED_DATA_MISSING` | 步骤依赖的数据在环境中不存在（blocked: seed_data） | configuration | 2 |
-| `TEST_SETUP_FAILED` | 未能准备好产品之外的测试前提条件（blocked: test_setup）。也包括违反约定的 `test.extend()` 测试夹具：未调用 `use()` 就返回、调用了两次，或重新定义了测试目标引擎提供的测试夹具 | configuration | 2 |
+| `TEST_SETUP_FAILED` | 未能准备好产品之外的测试前提条件（blocked: test_setup）。也包括违反约定的 `test.extend()` 测试夹具：未调用 `use()` 就返回，或调用了两次 | configuration | 2 |
 | `AUTOMATION_UNSUPPORTED` | 步骤需要当前工具集无法执行的交互，例如在设备上右键点击（blocked: automation） | test | 1 |
 | `MODEL_UNAVAILABLE` | 未配置模型：内置智能体的 `agents.<name>.model` 不含 AI SDK 模型实例（消息会指出选中的智能体），或 GitHub Copilot 未向该账户提供配置的模型（`model_not_supported`；消息会指出模型）。作为运行级别错误记录一次，然后停止运行。在测试运行中，首次获取 `agent` 测试夹具时会发现模型缺失，首次调用时会发现模型未提供。`e2e explore` 使用内置智能体，因此会在启动任何内容之前检查模型是否缺失，包括自定义执行器的条目。未配置模型的自定义执行器不接受此检查：其 `act` 和 `assert` 步骤会运行，而 `waitFor` 或 `extract` 在首次调用时会因该错误码失败。不会逐出任何[录制](/cache)。 | configuration | 2 |
 | `POLICY_DENIED` | 安全策略拒绝了操作：禁止的目的地、禁止的填入、没有像素时使用 `vision: 'only'`，或读取安全字段。也包括 `app.open` 链接使用了被拒绝的协议方案。[策略拒绝](/reference/security#policy-denials)列出了所有情况。未知工具，或对声明了字段的内置工具传入未声明的字段，会作为调用结果返回给模型，绝不会作为此错误码返回 | configuration | 2 |
@@ -135,14 +135,14 @@ export class AgentError extends Error {
 | `TEST_AMBIGUOUS` | `e2e mcp`：`open_session` 的 `test` 在会话的测试目标上选中了多个测试。消息会以 `file:line` 列出它们 | configuration | 2 |
 | `SESSION_TEST_UNSUPPORTED` | `e2e mcp`：`open_session` 的 `test` 选中了会话无法单独运行的测试：串行组成员、从准备测试的 `session` 开始的测试，或使用多个智能体运行的测试。请使用 `e2e run` 运行它 | configuration | 2 |
 | `UNSUPPORTED_ARTIFACT` | 测试目标或将在该目标上运行的测试设置的 [`video` 模式](/reference/config#recording)要求在某次尝试中录制，但该目标的引擎无法录制视频。消息会指出测试目标；如果模式来自测试，也会指出测试。配置根级别或 `--video` 的模式绝不会触发此错误：它们只适用于能录制的测试目标，并以提示列出其余目标 | configuration | 2 |
-| `UNSUPPORTED_CAPABILITY` | 测试目标的引擎未声明某个测试夹具、操作或层级：请求引擎未提供的扩展测试夹具、没有 `locate` 时使用 `screen`、没有 `state` 时恢复状态、没有 `artifacts` 时截图、在持久浏览器上下文上调用 `app.clearState()`（消息会指出模式）、执行器未声明 `vision: true` 时使用 `agent.assert` 的 `vision`，或测试视频正在录制时调用 `app.startRecording()` | configuration | 2 |
+| `UNSUPPORTED_CAPABILITY` | 测试目标的引擎未声明某个测试夹具、操作或层级：读取引擎未提供的测试夹具，而函数的第一个参数没有列出它（列出时为 `COLLECTION_ERROR`）、没有 `locate` 时使用 `screen`、没有 `state` 时恢复状态、没有 `artifacts` 时截图、在持久浏览器上下文上调用 `app.clearState()`（消息会指出模式）、执行器未声明 `vision: true` 时使用 `agent.assert` 的 `vision`，或测试视频正在录制时调用 `app.startRecording()` | configuration | 2 |
 | `NO_TESTS` | 可运行的普通测试与测试目标组合数为零。消息会指出原因：没有文件匹配 `tests` glob（会列出相似文件）、位置参数没有匹配项（会指出排除位置参数所指文件的 `!` 条目）、文件未注册测试，或过滤条件排除了全部测试。使用 `--pass-with-no-tests` 可抑制此错误。如果[测试过滤器](/filters)排除了所有可运行测试，运行会通过（退出码 0）。也适用于 `e2e mcp` 的 `open_session` 中 `test` 未选中任何可运行测试的情况。 | configuration | 2 |
 | `RUNNER_BUSY` | 测试套件与另一个测试套件、正在打开或已打开的宿主，或活动尝试重叠；或测试套件运行期间打开宿主；或另一个 `e2e mcp` 的 `run_tests` 正在运行时启动新的调用；或在没有终端时启动 `e2e run --step`，而该目录中已有单步运行，或某次运行在启动时被终止并遗留了锁（消息会指出要删除的文件）。重试前等待测试套件结束并关闭现有宿主；使用 `e2e run --step stop` 结束单步运行，或删除消息指定的锁文件。 | configuration | 2 |
 | `RUNNER_NOT_INSTALLED` | 在未安装 `e2e` 的位置调用了 `@e2e-dev/web` 或 `@e2e-dev/mobile` 中的 `test`、`describe` 或钩子，例如仅基于 `@e2e-dev/core` 的程序。同一入口导出的引擎工厂仍然可用。要编写测试，请安装 `e2e` | configuration | 2 |
 | `NO_LAST_RUN` | `--last-failed` 在运行写入报告的位置未找到 `report.json`，或该处文件不是 `report-1` 文档。请先不带该标志运行一次。 | configuration | 2 |
 | `INVALID_CHANGED_SINCE` | `--changed-since`（`changedSince`）不是字符串、为空或以 `-` 开头。或者，当运行调用测试过滤器或 `e2e explore` 探索变更时，该值在检出的仓库中未指向任何提交，或与 HEAD 没有共同历史记录（浅克隆时消息会提示获取更多历史，否则会说明历史不相关）；或项目不在 git 仓库中、未安装 git，或 git 未在 30 秒内响应 | configuration | 2 |
 | `ONLY_IN_CI` | CI 运行中出现了聚焦测试 | configuration | 2 |
-| `COLLECTION_ERROR` | 在收集阶段之外注册；标题无效；测试体不是函数；`describe` 的函数体为异步；嵌套串行组；串行组内使用了禁止的选项；`describe` 内包含准备测试；会话名称无效；测试选项格式错误，例如 `tags` 不是不重复名称的列表；测试或 `describe` 使用了调用不接受的选项键（消息会指出最接近的键）；在没有位置参数的运行中，或位置参数选中了该文件时，测试文件导入失败；所选测试使用的会话，或 `e2e explore --session` 指定的会话，没有任何已收集的准备测试生成它（消息会列出声明的会话）；使用会话的测试目标，其引擎没有用于保存会话的 `state` 能力；或位置参数路径在项目根目录之外 | configuration | 2 |
+| `COLLECTION_ERROR` | 在收集阶段之外注册；标题无效；测试体不是函数；`describe` 的函数体为异步；嵌套串行组；串行组内使用了禁止的选项；`describe` 内包含准备测试；会话名称无效；测试选项格式错误，例如 `tags` 不是不重复名称的列表；测试或 `describe` 使用了调用不接受的选项键（消息会指出最接近的键）；在没有位置参数的运行中，或位置参数选中了该文件时，测试文件导入失败；所选测试使用的会话，或 `e2e explore --session` 指定的会话，没有任何已收集的准备测试生成它（消息会列出声明的会话）；使用会话的测试目标，其引擎没有用于保存会话的 `state` 能力；位置参数路径在项目根目录之外；或违反了测试夹具规则，报告时带有代码所在的文件和行号：测试体、钩子或 `test.extend()` 测试夹具函数没有解构第一个参数或在其中使用剩余属性，在某个测试目标上运行的测试用到了该测试目标没有的测试夹具名称，`beforeAll`、`afterAll` 或工作进程测试夹具列出了测试作用域的测试夹具，测试夹具互相列出形成循环，或 `test.extend()` 测试夹具的 `scope` 与它所扩展的测试夹具的作用域不同 | configuration | 2 |
 | `SESSION_MISMATCH` | 已存储会话与当前运行、测试目标、引擎、平台或应用标识不匹配。也包括将 `@e2e-dev/core` 的 `SessionState` 传给其他引擎、平台或应用的宿主 | configuration | 2 |
 | `SESSION_EXPIRED` | 已存储会话或 `@e2e-dev/core` 的 `SessionState` 在恢复或导入时已过期（configuration，退出码 2），或准备测试保存的状态，其过期时间不晚于创建时间（test，退出码 1） | configuration 或 test | 2 或 1 |
 | `SESSION_INVALID` | 已存储会话未通过身份验证，遭到篡改或损坏。也包括 `SessionState.import`（`@e2e-dev/core`）接收到的字节不是 `session-state-1` 文档，或无法用该密钥通过身份验证：密钥不同，或某个字节已更改 | configuration | 2 |

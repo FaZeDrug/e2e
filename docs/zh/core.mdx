@@ -31,7 +31,7 @@ bun add @e2e-dev/core @e2e-dev/web
 
 ## 操作浏览器
 
-`launch` 准备引擎并返回宿主。会话是该宿主上一个隔离的浏览器上下文，包含 `screen`、`app`、`platform` 和引擎自己的测试夹具，此处为 `browser`。
+`launch` 准备引擎并返回宿主。会话是该宿主上一个隔离的浏览器上下文，包含内置测试夹具 `screen`、`app` 和 `platform`，以及引擎提供的那一个，此处为 `browser`。
 
 ```ts title="prices.ts"
 import { launch } from '@e2e-dev/core';

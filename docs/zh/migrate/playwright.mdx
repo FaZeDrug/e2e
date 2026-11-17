@@ -162,10 +162,13 @@ test('checkout', async ({ app, agent, screen }) => {
 | `import { test, expect } from '@playwright/test'` | `import { test } from '@e2e-dev/web'` 和 `import { expect } from 'e2e'` |
 | 测试中的 `{ page }` | `{ screen, app, browser }` |
 | `test()`, `test.describe()`, `test.only`, `test.fail()`, `test.skip(title, fn)`, `test.skip(condition, reason)` | 相同；条件式 `skip` 可用于测试体或 `beforeEach` 中 |
-| `beforeEach`, `afterEach`, `beforeAll`, `afterAll` | 相同，但不带标题；`beforeAll` 和 `afterAll` 只能获得 `platform` 测试夹具 |
+| `beforeEach`, `afterEach`, `beforeAll`, `afterAll` | 相同，但不带标题；`beforeAll` 和 `afterAll` 得到工作进程测试夹具，而不是 `browser`、`app` 或 `screen` |
 | `test.describe.skip`, `test.describe.serial`, `describe.configure({ mode: 'serial', retries, timeout })` | `test.describe(title, { skip, serial, retries, timeout }, fn)` |
 | `{ tag: '@smoke' }` | 测试或组上的 `{ tags: ['smoke'] }` |
-| `test.extend({ fixture })` | 结构相同；依赖另一个测试夹具的测试夹具应放在链式 `extend` 中 |
+| `test.extend({ fixture })` | 结构相同，按需准备：测试、钩子或测试夹具会得到它在第一个参数中列出的测试夹具 |
+| `[fn, { scope: 'worker' }]` 测试夹具 | 相同，用 `extend` 的第二个类型参数提供类型 |
+| `[fn, { auto: true }]` 测试夹具 | 相同，两种作用域都可以 |
+| 覆盖测试夹具，`page: async ({ page }, use) => {}` | 对 `app`、`screen`、`browser` 和你自己的测试夹具同样适用，参阅[扩展测试夹具](/reference/test#extending-a-fixture) |
 
 </Accordion>
 <Accordion title="CLI">
@@ -217,7 +220,7 @@ export const test = base.extend<{ accountPage: AccountPage }>({
 });
 ```
 
-读取 `browser` 的测试夹具会让该 `test` 上的所有测试仅限网页端，参阅[保持可移植性](/page-object-model#keep-it-portable)。从钩子中移除 `newPage()` 和 `page.close()`：每次尝试都在全新的上下文中开始。
+列出 `browser` 的测试夹具会让使用它的每个测试仅限网页端，参阅[保持可移植性](/page-object-model#keep-it-portable)。从钩子中移除 `newPage()` 和 `page.close()`：每次尝试都在全新的上下文中开始。
 
 ## e2e 尚未提供的功能
 
@@ -271,7 +274,7 @@ export const test = base.extend<{ accountPage: AccountPage }>({
 | `test.step()`, `testInfo.attach()` | 每次调用已是报告中有名称的步骤；`app.screenshot(label)` 附加截图 |
 | `test.info()`、钩子和测试夹具中的 `testInfo`、`annotations` | 自己的测试夹具或模块状态；标题中的问题 ID 或标签 |
 | `fullyParallel`, `describe.configure({ mode: 'parallel' })` | 拆分文件。文件并行运行，同一文件中的测试按顺序运行 |
-| 按需测试夹具、工作进程作用域测试夹具和 `{ auto: true }` 测试夹具；`mergeTests()` | 每组测试夹具使用一个 `test`；每个文件的准备工作使用 `beforeAll` |
+| `mergeTests()` | 一条 `extend` 调用链 |
 | `globalSetup`, `globalTeardown`, `webServer` 数组 | 在运行前后执行的脚本，或启动所有进程的一个 `app.command` |
 | `projects[].testMatch`, `testDir`, `testIgnore`, `grep` | 测试上的 `platforms` 或标签，或为每个测试目标单独运行 |
 | `--ui`, `npx playwright show-report`, `--reporter html` | `--watch --headed`；打开 `htmlReporter()` 写入的 `.e2e/report.html` |

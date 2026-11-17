@@ -97,12 +97,9 @@ export const test = base.extend({
 
 该测试夹具沿用[内置测试夹具的作用域](/reference/test#fixtures)。在移动端测试目标上，`device` 是工作进程测试夹具，因此它在每个工作进程中运行一次，`beforeAll` 也会得到它。参阅[扩展测试夹具](/reference/test#extending-a-fixture)。
 
-## Share a fixture across a worker
+## 在工作进程中共享测试夹具
 
-A worker fixture is set up one time per worker and target, by the first test
-or suite hook that names it, and torn down when the worker ends. Use one for a
-database, a server, or an API client that many tests share. Declare it with `{ scope: 'worker' }` and type it with the second
-type argument:
+工作进程测试夹具在每个工作进程和测试目标上只准备一次，由第一个列出它的测试或测试套件钩子准备，并在工作进程结束时清理。它适用于许多测试共享的数据库、服务器或 API 客户端。用 `{ scope: 'worker' }` 声明它，并用第二个类型参数为它提供类型：
 
 ```ts title="tests/fixtures.ts"
 export const test = base.extend<{}, { database: Database }>({
@@ -114,14 +111,9 @@ export const test = base.extend<{}, { database: Database }>({
 });
 ```
 
-A worker fixture outlives every test, so it sees worker fixtures only: its
-own kind, and the [built-in fixtures](/reference/test#fixtures) whose scope is
-worker on the target.
+工作进程测试夹具比每个测试都存在得更久，因此它只能看到工作进程测试夹具：其他工作进程测试夹具，以及在测试目标上作用域为工作进程的[内置测试夹具](/reference/test#fixtures)。
 
-Declare it in a module your test files import, not in a test file. A test
-file loads again after a failed test and for each serial group and setup test,
-and a worker fixture it declares gets a
-new instance each time. The old instance stays set up until the worker ends.
+请在测试文件导入的模块中声明它，不要在测试文件中声明。测试文件会在测试失败后重新加载，并为每个串行分组和准备测试重新加载，它声明的工作进程测试夹具每次都会得到一个新实例。旧实例会保持已准备的状态，直到工作进程结束。
 
 ## 在钩子中读取测试夹具
 
