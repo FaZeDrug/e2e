@@ -528,17 +528,26 @@ test.setup('authenticate', { sessions: ['member', 'admin'] }, async ({ session }
 
 ### 测试夹具
 
-| 测试夹具 | 类型 |
-| --- | --- |
-| [`agent`](/reference/agent) | `Agent` |
-| [`app`](/reference/app) | `App` |
-| [`screen`](/reference/screen) | `Screen` |
-| `platform` | `string` |
-| [`session`](#test-setup) | `SetupSession` |
+内置测试夹具是 `test` 不需要 `test.extend` 就有的测试夹具：所有引擎都有的五个，以及测试目标的引擎提供的测试夹具。每个内置测试夹具在每个引擎上都有一个作用域。
 
-`agent`、`app` 和 `screen` 可用于测试主体、`beforeEach` 和 `afterEach`。`platform` 也可用于所有钩子，`session` 则仅用于 `test.setup` 主体。[`TestFixtures`](#testfixtures) 描述了每一项。
+| 内置测试夹具 | 类型 | 网页端 | 移动端 |
+| --- | --- | --- | --- |
+| [`agent`](/reference/agent) | `Agent` | 测试 | 测试 |
+| [`app`](/reference/app) | `App` | 测试 | 工作进程 |
+| [`screen`](/reference/screen) | `Screen` | 测试 | 工作进程 |
+| `platform` | `string` | 工作进程 | 工作进程 |
+| [`session`](#test-setup) | `SetupSession` | 测试 | 测试 |
+| [`browser`](/reference/web) | `Browser` | 测试 | - |
+| [`device`](/reference/mobile#device) | `Device` | - | 工作进程 |
 
-其余都是测试目标引擎提供的测试夹具，或[你自己的测试夹具](#your-own-fixtures)。`@e2e-dev/web` 提供 [`browser`](/reference/web)；设备引擎提供 `device`。
+作用域决定哪些代码可以使用内置测试夹具：
+
+- 测试作用域的测试夹具属于一次测试尝试。测试主体、`beforeEach` 和 `afterEach` 可以得到它。
+- 工作进程作用域的测试夹具比测试存在得更久。`beforeAll`、`afterAll` 和[工作进程测试夹具](#worker-fixtures)也可以得到它。
+
+浏览器测试会获得新的上下文，因此在网页端，`app`、`screen` 和 `browser` 是测试作用域。设备会在测试之间保留状态，因此在移动端，`app`、`screen` 和 `device` 是工作进程作用域。你自己的引擎通过 [`isolation`](/reference/engine#fixture-isolation) 设置它。
+
+`session` 仅用于 `test.setup` 主体。[`TestFixtures`](#testfixtures) 描述了每个核心测试夹具。其余测试夹具都是[你自己的测试夹具](#your-own-fixtures)。
 
 测试主体、钩子和测试夹具函数通过解构第一个参数来列出它们使用的测试夹具：`async ({ app, screen }) => {}`。e2e 从函数的源代码中读取这些名称。
 
@@ -548,7 +557,7 @@ test.setup('authenticate', { sessions: ['member', 'admin'] }, async ({ session }
 | `COLLECTION_ERROR` | 测试主体、钩子或测试夹具函数接收整个对象（`async (fixtures) => {}`）、剩余属性（`{ app, ...rest }`）或计算属性。 |
 
 <Note>
-上述测试夹具按需获取。在参数列表中解构会在主体第一条语句之前获取它们。[你自己的测试夹具](#your-own-fixtures)会在第一个 `beforeEach` 之前准备。
+内置测试夹具按需获取。在参数列表中解构会在主体第一条语句之前获取它们。[你自己的测试夹具](#your-own-fixtures)会在第一个 `beforeEach` 之前准备。
 </Note>
 
 #### 自己的测试夹具
@@ -628,9 +637,10 @@ export const test = base.extend<{}, { database: Database }>({
 - Teardown runs when the worker ends, before the engine is disposed, last set
   up first. Each teardown has `cleanupTimeout`. One that throws is a run error
   in phase `cleanup`.
-- It sees worker fixtures only: `platform`, the worker fixtures of the `test`
-  it extends and the ones declared beside it, and on a mobile target `device`,
-  `app`, and `screen`. Naming a test fixture is `COLLECTION_ERROR`.
+- It sees worker fixtures only: the [built-in fixtures](#fixtures) whose
+  scope is worker on the target, the worker fixtures of the `test` it extends,
+  and the ones declared beside it. Naming a test fixture is
+  `COLLECTION_ERROR`.
 - On a mobile target its `device`, `app`, and `screen` act in the test or
   hook that is running when it calls them. Its teardown can still drive the
   device: it runs in a short engine attempt when the fixture names one of

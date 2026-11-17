@@ -528,17 +528,26 @@ test.setup('authenticate', { sessions: ['member', 'admin'] }, async ({ session }
 
 ### フィクスチャ
 
-| フィクスチャ | 型 |
-| --- | --- |
-| [`agent`](/reference/agent) | `Agent` |
-| [`app`](/reference/app) | `App` |
-| [`screen`](/reference/screen) | `Screen` |
-| `platform` | `string` |
-| [`session`](#test-setup) | `SetupSession` |
+組み込みフィクスチャは、`test.extend` なしで `test` が持つフィクスチャです。すべてのエンジンに共通する 5 つと、ターゲットのエンジンが提供するものがあります。それぞれに、エンジンごとのスコープがあります。
 
-`agent`、`app`、`screen` はテスト本体、`beforeEach`、`afterEach` に渡されます。`platform` はすべてのフックにも渡され、`session` は `test.setup` の本体だけに渡されます。各フィクスチャの説明は [`TestFixtures`](#testfixtures) にあります。
+| 組み込みフィクスチャ | 型 | Web | モバイル |
+| --- | --- | --- | --- |
+| [`agent`](/reference/agent) | `Agent` | テスト | テスト |
+| [`app`](/reference/app) | `App` | テスト | ワーカー |
+| [`screen`](/reference/screen) | `Screen` | テスト | ワーカー |
+| `platform` | `string` | ワーカー | ワーカー |
+| [`session`](#test-setup) | `SetupSession` | テスト | テスト |
+| [`browser`](/reference/web) | `Browser` | テスト | - |
+| [`device`](/reference/mobile#device) | `Device` | - | ワーカー |
 
-それ以外は、ターゲットのエンジンが提供するフィクスチャか、[独自のフィクスチャ](#your-own-fixtures)です。`@e2e-dev/web` は [`browser`](/reference/web)、デバイスエンジンは `device` を提供します。
+スコープによって、組み込みフィクスチャを使えるコードが決まります。
+
+- テストフィクスチャは、1 回のテスト試行に属します。テスト本体、`beforeEach`、`afterEach` が受け取ります。
+- ワーカーフィクスチャは、テストより長く存続します。`beforeAll`、`afterAll`、[ワーカーフィクスチャ](#worker-fixtures)も受け取ります。
+
+ブラウザのテストは新しいコンテキストで始まるため、Web では `app`、`screen`、`browser` はテストフィクスチャです。デバイスはテスト間で状態を保つため、モバイルでは `app`、`screen`、`device` はワーカーフィクスチャです。独自のエンジンでは、[`isolation`](/reference/engine#fixture-isolation) で設定します。
+
+`session` は `test.setup` の本体だけに渡されます。コアのフィクスチャの説明は [`TestFixtures`](#testfixtures) にあります。それ以外のフィクスチャは、[独自のフィクスチャ](#your-own-fixtures)です。
 
 テスト本体、フック、フィクスチャ関数は、最初の引数の分割代入で、使うフィクスチャを指定します（`async ({ app, screen }) => {}`）。e2e は関数のソースから名前を読み取ります。
 
@@ -548,7 +557,7 @@ test.setup('authenticate', { sessions: ['member', 'admin'] }, async ({ session }
 | `COLLECTION_ERROR` | テスト本体、フック、フィクスチャ関数が、オブジェクト全体（`async (fixtures) => {}`）、残余プロパティ（`{ app, ...rest }`）、または計算プロパティを受け取る場合。 |
 
 <Note>
-上記のフィクスチャは遅延取得します。パラメーターリストで分割代入すると、テスト本体の最初の文より前に取得します。[独自のフィクスチャ](#your-own-fixtures)は、最初の `beforeEach` より前にセットアップします。
+組み込みフィクスチャは遅延取得します。パラメーターリストで分割代入すると、テスト本体の最初の文より前に取得します。[独自のフィクスチャ](#your-own-fixtures)は、最初の `beforeEach` より前にセットアップします。
 </Note>
 
 #### 独自のフィクスチャ
@@ -628,9 +637,10 @@ export const test = base.extend<{}, { database: Database }>({
 - Teardown runs when the worker ends, before the engine is disposed, last set
   up first. Each teardown has `cleanupTimeout`. One that throws is a run error
   in phase `cleanup`.
-- It sees worker fixtures only: `platform`, the worker fixtures of the `test`
-  it extends and the ones declared beside it, and on a mobile target `device`,
-  `app`, and `screen`. Naming a test fixture is `COLLECTION_ERROR`.
+- It sees worker fixtures only: the [built-in fixtures](#fixtures) whose
+  scope is worker on the target, the worker fixtures of the `test` it extends,
+  and the ones declared beside it. Naming a test fixture is
+  `COLLECTION_ERROR`.
 - On a mobile target its `device`, `app`, and `screen` act in the test or
   hook that is running when it calls them. Its teardown can still drive the
   device: it runs in a short engine attempt when the fixture names one of

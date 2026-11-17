@@ -111,9 +111,10 @@ export const test = base.extend({
 });
 ```
 
-The fixture keeps the scope of the built-in. On a mobile target `device` is a
-worker fixture, so this one runs one time per worker and `beforeAll` gets it.
-See [Extending a fixture](/reference/test#extending-a-fixture).
+The fixture keeps the [scope of the built-in fixture](/reference/test#fixtures).
+On a mobile target `device` is a worker fixture, so this one runs one time
+per worker and `beforeAll` gets it. See
+[Extending a fixture](/reference/test#extending-a-fixture).
 
 ## Share a fixture across a worker
 
@@ -132,7 +133,9 @@ export const test = base.extend<{}, { database: Database }>({
 });
 ```
 
-A worker fixture outlives every test, so it sees worker fixtures only.
+A worker fixture outlives every test, so it sees worker fixtures only: its
+own kind, and the [built-in fixtures](/reference/test#fixtures) whose scope is
+worker on the target.
 
 Declare it in a module your test files import, not in a test file. A test
 file loads again after a failed test and for each serial group and setup test,
@@ -151,9 +154,10 @@ test.beforeEach(async ({ screen, project }) => {
 ```
 
 `beforeAll` and `afterAll` get worker fixtures only. A device keeps its state
-between tests, so on mobile they also get `device`, `app`, and `screen`. A
-browser test gets a new context, so put UI setup in `beforeEach`. See
-[Hooks](/reference/test#hooks).
+between tests, so on mobile the built-in fixtures `device`, `app`, and
+`screen` are worker fixtures too. A browser test gets a new context, so put UI
+setup in `beforeEach`. See the scope of each
+[built-in fixture](/reference/test#fixtures).
 
 ## When a fixture fails
 

@@ -95,7 +95,7 @@ export const test = base.extend({
 });
 ```
 
-このフィクスチャは、組み込みフィクスチャのスコープを引き継ぎます。モバイルターゲットでは `device` はワーカーフィクスチャなので、この例はワーカーごとに 1 回実行され、`beforeAll` にも渡されます。[フィクスチャの拡張](/reference/test#extending-a-fixture)を参照してください。
+このフィクスチャは、[組み込みフィクスチャのスコープ](/reference/test#fixtures)を引き継ぎます。モバイルターゲットでは `device` はワーカーフィクスチャなので、この例はワーカーごとに 1 回実行され、`beforeAll` にも渡されます。[フィクスチャの拡張](/reference/test#extending-a-fixture)を参照してください。
 
 ## Share a fixture across a worker
 
@@ -114,7 +114,9 @@ export const test = base.extend<{}, { database: Database }>({
 });
 ```
 
-A worker fixture outlives every test, so it sees worker fixtures only.
+A worker fixture outlives every test, so it sees worker fixtures only: its
+own kind, and the [built-in fixtures](/reference/test#fixtures) whose scope is
+worker on the target.
 
 Declare it in a module your test files import, not in a test file. A test
 file loads again after a failed test and for each serial group and setup test,
@@ -131,7 +133,7 @@ test.beforeEach(async ({ screen, project }) => {
 });
 ```
 
-`beforeAll` と `afterAll` が受け取るのは、ワーカーフィクスチャだけです。デバイスはテスト間で状態を保つため、モバイルでは `device`、`app`、`screen` も受け取ります。ブラウザのテストは新しいコンテキストで始まるため、UI のセットアップは `beforeEach` に置いてください。[フック](/reference/test#hooks)を参照してください。
+`beforeAll` と `afterAll` が受け取るのは、ワーカーフィクスチャだけです。デバイスはテスト間で状態を保つため、モバイルでは組み込みフィクスチャの `device`、`app`、`screen` もワーカーフィクスチャです。ブラウザのテストは新しいコンテキストで始まるため、UI のセットアップは `beforeEach` に置いてください。各[組み込みフィクスチャ](/reference/test#fixtures)のスコープを参照してください。
 
 ## フィクスチャが失敗した場合
 

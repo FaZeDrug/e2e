@@ -95,7 +95,7 @@ export const test = base.extend({
 });
 ```
 
-该测试夹具沿用内置测试夹具的作用域。在移动端测试目标上，`device` 是工作进程测试夹具，因此它在每个工作进程中运行一次，`beforeAll` 也会得到它。参阅[扩展测试夹具](/reference/test#extending-a-fixture)。
+该测试夹具沿用[内置测试夹具的作用域](/reference/test#fixtures)。在移动端测试目标上，`device` 是工作进程测试夹具，因此它在每个工作进程中运行一次，`beforeAll` 也会得到它。参阅[扩展测试夹具](/reference/test#extending-a-fixture)。
 
 ## Share a fixture across a worker
 
@@ -114,7 +114,9 @@ export const test = base.extend<{}, { database: Database }>({
 });
 ```
 
-A worker fixture outlives every test, so it sees worker fixtures only.
+A worker fixture outlives every test, so it sees worker fixtures only: its
+own kind, and the [built-in fixtures](/reference/test#fixtures) whose scope is
+worker on the target.
 
 Declare it in a module your test files import, not in a test file. A test
 file loads again after a failed test and for each serial group and setup test,
@@ -131,7 +133,7 @@ test.beforeEach(async ({ screen, project }) => {
 });
 ```
 
-`beforeAll` 和 `afterAll` 只接收工作进程测试夹具。设备会在测试之间保留状态，因此在移动端它们还会接收 `device`、`app` 和 `screen`。浏览器测试会获得新的上下文，因此请把 UI 准备放在 `beforeEach` 中。参阅[钩子](/reference/test#hooks)。
+`beforeAll` 和 `afterAll` 只接收工作进程测试夹具。设备会在测试之间保留状态，因此在移动端，内置测试夹具 `device`、`app` 和 `screen` 也是工作进程测试夹具。浏览器测试会获得新的上下文，因此请把 UI 准备放在 `beforeEach` 中。参阅每个[内置测试夹具](/reference/test#fixtures)的作用域。
 
 ## 测试夹具失败时
 

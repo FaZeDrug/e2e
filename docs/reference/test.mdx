@@ -45,7 +45,8 @@ describe('checkout', { tags: ['billing'] }, () => {
 as `test.describe`, `test.beforeEach`, and the rest:
 `import { describe, beforeEach, test } from 'e2e'`.
 
-- A per-test hook imported from `e2e` is typed with the core fixtures.
+- A per-test hook imported from `e2e` is typed with the [built-in fixtures](#fixtures)
+  every engine has.
 - `@e2e-dev/web` and `@e2e-dev/mobile` export `test`, `describe`, and all
   four hooks typed with their `browser` or `device` fixture, so a test file
   registers from one import.
@@ -253,7 +254,7 @@ export const test = base.extend<{ device: Device }>(); // types only
 ```
 
 - With no argument, `extend` refines only the types: it returns the same
-  runtime `test`, typed with an engine's contributed fixtures. They still
+  runtime `test`, typed with the built-in fixtures an engine contributes. They still
   resolve from the target's engine at runtime. This types a device, desktop,
   or web surface without a global `declare module` augmentation.
 - With definitions, it adds fixtures of your own. See
@@ -346,15 +347,13 @@ The module is re-imported for every retry, serial group, and setup test, so
 
 It receives [worker fixtures](#worker-fixtures) only:
 
-- `platform`.
+- The [built-in fixtures](#fixtures) whose scope is worker on the target:
+  `platform`, and on a mobile target `device`, `app`, and `screen`.
 - The worker fixtures of the `test` it was registered through. The ones it
   names are set up, and the ones declared with `auto: true`.
-- On a mobile target, `device`, `app`, and `screen`. A device keeps its state
-  between tests.
 
 On a browser target, `browser`, `app`, and `screen` are test fixtures. Put UI
-setup in `beforeEach`. `agent` and `session` are test fixtures on every
-target.
+setup in `beforeEach`.
 
 On a mobile target:
 
@@ -530,7 +529,7 @@ Accepted values:
 
 - The harness capabilities of the target's engine: `observation`, `actions`,
   `location`, `pointer`, `keyboard`, `computed-style`, `state`, `artifacts`.
-- One per contributed fixture: `browser`, `device`. See
+- One per built-in fixture an engine contributes: `browser`, `device`. See
   [the engine contract](/reference/engine#engine).
 - The kind of app the target declares: `browser` for an `app.url`,
   `native-app` for an `app.bundleId` or `app.appPath`.
@@ -648,23 +647,35 @@ A static, non-empty array of unique names. Each name matches
 
 ### Fixtures
 
-| Fixture | Type |
-| --- | --- |
-| [`agent`](/reference/agent) | `Agent` |
-| [`app`](/reference/app) | `App` |
-| [`screen`](/reference/screen) | `Screen` |
-| `platform` | `string` |
-| [`session`](#test-setup) | `SetupSession` |
+Built-in fixtures are the fixtures a `test` has without `test.extend`: five
+on every engine, and the ones the target's engine contributes. Each has a
+scope on each engine.
 
-`agent`, `app`, and `screen` reach test bodies, `beforeEach`, and
-`afterEach`. `platform` reaches every hook too, and `session` only
-`test.setup` bodies. On a mobile target, `app`, `screen`, and `device` reach
-`beforeAll` and `afterAll` too. See [`beforeAll`](#beforeall).
-[`TestFixtures`](#testfixtures) describes each one.
+| Built-in fixture | Type | Web | Mobile |
+| --- | --- | --- | --- |
+| [`agent`](/reference/agent) | `Agent` | test | test |
+| [`app`](/reference/app) | `App` | test | worker |
+| [`screen`](/reference/screen) | `Screen` | test | worker |
+| `platform` | `string` | worker | worker |
+| [`session`](#test-setup) | `SetupSession` | test | test |
+| [`browser`](/reference/web) | `Browser` | test | - |
+| [`device`](/reference/mobile#device) | `Device` | - | worker |
 
-Everything else is a fixture the target's engine contributes, or one of
-[your own](#your-own-fixtures). `@e2e-dev/web` contributes
-[`browser`](/reference/web); a device engine contributes `device`.
+The scope decides which code can use a built-in fixture:
+
+- A test fixture belongs to one test attempt. Test bodies, `beforeEach`, and
+  `afterEach` get it.
+- A worker fixture outlives a test. `beforeAll`, `afterAll`, and
+  [worker fixtures](#worker-fixtures) get it too.
+
+A browser test gets a new context, so on web `app`, `screen`, and `browser`
+are test fixtures. A device keeps its state between tests, so on mobile `app`,
+`screen`, and `device` are worker fixtures. An engine of your own sets this
+with [`isolation`](/reference/engine#fixture-isolation).
+
+`session` reaches only `test.setup` bodies. [`TestFixtures`](#testfixtures)
+describes each core one. Every other fixture is one of
+[your own](#your-own-fixtures).
 
 A test body, a hook, and a fixture function name the fixtures they use by
 destructuring their first parameter: `async ({ app, screen }) => {}`. e2e
@@ -676,7 +687,7 @@ reads the names from the function's source.
 | `COLLECTION_ERROR` | A test body, a hook, or a fixture function takes the whole object (`async (fixtures) => {}`), a rest property (`{ app, ...rest }`), or a computed property. |
 
 <Note>
-The fixtures above are lazy. Destructuring in the parameter list acquires
+Built-in fixtures are lazy. Destructuring in the parameter list acquires
 them before the body's first statement. [Your own
 fixtures](#your-own-fixtures) are set up before the first `beforeEach`.
 </Note>
@@ -786,9 +797,10 @@ export const test = base.extend<{}, { database: Database }>({
 - Teardown runs when the worker ends, before the engine is disposed, last set
   up first. Each teardown has `cleanupTimeout`. One that throws is a run error
   in phase `cleanup`.
-- It sees worker fixtures only: `platform`, the worker fixtures of the `test`
-  it extends and the ones declared beside it, and on a mobile target `device`,
-  `app`, and `screen`. Naming a test fixture is `COLLECTION_ERROR`.
+- It sees worker fixtures only: the [built-in fixtures](#fixtures) whose
+  scope is worker on the target, the worker fixtures of the `test` it extends,
+  and the ones declared beside it. Naming a test fixture is
+  `COLLECTION_ERROR`.
 - On a mobile target its `device`, `app`, and `screen` act in the test or
   hook that is running when it calls them. Its teardown can still drive the
   device: it runs in a short engine attempt when the fixture names one of
@@ -803,8 +815,7 @@ export const test = base.extend<{}, { database: Database }>({
 #### Extending a fixture
 
 A definition named like a fixture the `test` already has extends that fixture.
-It can be a built-in fixture (`agent`, `app`, `screen`, `platform`, `session`,
-`browser`, `device`) or a fixture of an earlier `extend`.
+It can be a [built-in fixture](#fixtures) or a fixture of an earlier `extend`.
 
 ```ts
 export const test = base.extend({
@@ -821,10 +832,10 @@ export const test = base.extend({
 - Tests, hooks, and other fixtures that name the fixture get the value passed
   to `use`. What the runner does with a built-in fixture does not change.
 - It is set up on demand, for code that names the fixture.
-- It keeps the scope of the fixture it extends on the target. `device` is a
-  worker fixture, so its override runs one time per worker and `beforeAll`
-  gets it. `app` is a test fixture on a web target and a worker fixture on a
-  mobile target. A `scope` in the options must be that scope.
+- It keeps the scope of the fixture it extends on the target, as the
+  [built-in fixtures](#fixtures) table gives it. `device` is a worker fixture,
+  so its override runs one time per worker and `beforeAll` gets it. A `scope`
+  in the options must be that scope.
 - It keeps the type. Define it with no type argument: the type arguments of
   `extend` are for new fixtures.
 - On a target that has no fixture of that name, nothing fails until code that
