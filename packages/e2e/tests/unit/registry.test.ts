@@ -458,12 +458,27 @@ describe('test.extend', () => {
     const chains = registration.tests.map((item) => item.fixtures.map((definition) => definition.name));
     expect(chains).toEqual([[], ['one'], ['one', 'two'], ['one', 'two'], ['one', 'two'], ['one', 'two']]);
     expect(registration.tests[2]!.fixtures[1]!.fn).toBe(fixture);
-    const hookChains = registration.hooks.map((hook) =>
-      hook.kind === 'beforeEach' || hook.kind === 'afterEach'
-        ? hook.fixtures.map((definition) => definition.name)
-        : hook.kind,
-    );
-    expect(hookChains).toEqual([['one', 'two'], ['one', 'two'], 'afterAll']);
+    const hookChains = registration.hooks.map((hook) => [hook.kind, ...hook.fixtures.map((definition) => definition.name)]);
+    expect(hookChains).toEqual([['beforeEach', 'one', 'two'], ['afterEach', 'one', 'two'], ['afterAll', 'one']]);
+  });
+
+  it('reads a scope from [fn, { scope }] and defaults to test', async () => {
+    const extended = test.extend<{ page: string; plain: string }, { database: string }>({
+      plain: fixture,
+      page: [fixture, { scope: 'test' }],
+      database: [fixture, { scope: 'worker' }],
+    });
+    const registration = await collectModule(async () => {
+      extended('scoped', noop);
+    });
+    const scopes = registration.tests[0]!.fixtures.map((definition) => [definition.name, definition.scope, definition.fn === fixture]);
+    expect(scopes).toEqual([['plain', 'test', true], ['page', 'test', true], ['database', 'worker', true]]);
+  });
+
+  it('rejects a malformed scoped definition', () => {
+    expect(() => test.extend({ database: [fixture] } as never)).toThrow(/fixture "database" must be a function .* or \[fn, \{ scope/);
+    expect(() => test.extend({ database: [fixture, { scope: 'file' }] } as never)).toThrow(/fixture "database" scope must be 'test' or 'worker', got "file"/);
+    expect(() => test.extend({ database: [fixture, { scop: 'worker' }] } as never)).toThrow(/options has unknown key "scop"/);
   });
 
   it('carries the chain through skipIf and runIf on an extended test', async () => {

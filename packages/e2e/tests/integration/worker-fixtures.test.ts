@@ -1,0 +1,308 @@
+/** Worker-scoped fixtures and the suite hooks that receive them, on an engine that isolates each attempt and on one whose state outlives it. */
+
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { createFakeEngine } from '../helpers/fake-engine.ts';
+import { engineConfig } from '../helpers/fixture-config.ts';
+import { assertValidReport } from '../helpers/report-schema.ts';
+import { resultByTitle, runProject } from '../helpers/run-project.ts';
+
+/** A log file the fixture project appends to, read back as its lines. */
+function hookLog(name: string): { readonly path: string; lines(): string[] } {
+  const logPath = path.join('/tmp', `e2e-${name}-${Date.now()}.log`);
+  process.env['HOOK_LOG'] = logPath;
+  return { path: logPath, lines: () => readFileSync(logPath, 'utf8').trim().split('\n') };
+}
+
+const LOG_MODULE = `import { appendFileSync } from 'node:fs';
+export const log = (entry: string) => appendFileSync(process.env.HOOK_LOG!, entry + '\\n');
+`;
+
+describe('worker fixtures', () => {
+  it(
+    'sets a worker fixture up once per worker, shares it with the suite hooks, and tears it down after the last test',
+    async () => {
+      // Declared in a module the test file imports, so the instance outlives the re-import after a failure.
+      const support = `import { test as base } from 'e2e';
+import { log } from './log.ts';
+
+let starts = 0;
+export const test = base
+  .extend<{}, { database: { id: number } }>({
+    database: [async ({ platform }, use) => {
+      starts += 1;
+      log('setup:database:' + platform + ':' + starts);
+      await use({ id: starts });
+      log('teardown:database');
+    }, { scope: 'worker' }],
+  })
+  .extend<{ page: string }>({
+    page: async ({ database }, use) => {
+      log('setup:page:' + database.id);
+      await use('page-' + database.id);
+      log('teardown:page');
+    },
+  });
+`;
+      const file = `import { test } from './support.ts';
+import { log } from './log.ts';
+
+test.describe('suite', () => {
+  test.beforeAll(({ database, platform }) => log('beforeAll:' + platform + ':' + database.id));
+  test.afterAll(({ database }) => log('afterAll:' + database.id));
+  test('first', ({ page, database }) => log('body:first:' + page + ':' + database.id));
+  test('fails', () => {
+    log('body:fails');
+    throw new Error('boom');
+  });
+  test('after the failure', ({ database }) => log('body:after:' + database.id));
+});
+
+test.describe('reaches for a test fixture', () => {
+  test.beforeAll((fixtures) => {
+    log('beforeAll:gadget');
+    void fixtures.gadget;
+  });
+  test('skipped by its hook', () => log('unreachable'));
+});
+`;
+      const log = hookLog('worker-fixtures');
+      const { outcome, project } = await runProject(
+        { 'tests/log.ts': LOG_MODULE, 'tests/support.ts': support, 'tests/worker.e2e.ts': file },
+        { config: engineConfig(createFakeEngine({ fixtures: true }).engine) },
+      );
+      try {
+        assertValidReport(outcome.report);
+        expect(resultByTitle(outcome, 'first').status).toBe('passed');
+        expect(resultByTitle(outcome, 'fails').status).toBe('failed');
+        expect(resultByTitle(outcome, 'after the failure').status).toBe('passed');
+        const skipped = resultByTitle(outcome, 'skipped by its hook');
+        expect(skipped.status).toBe('skipped');
+        expect(skipped.skip?.cause).toBe('hook-failed');
+        const hookErrors = outcome.report.run.errors.map(({ code, phase, message }) => ({ code, phase, message }));
+        expect(hookErrors).toEqual([
+          {
+            code: 'HOOK_FAILED',
+            phase: 'beforeAll',
+            message: expect.stringContaining('"gadget" is a test fixture on target "fake"'),
+          },
+        ]);
+        expect(log.lines()).toEqual([
+          'setup:database:fake:1',
+          'beforeAll:fake:1',
+          'setup:page:1',
+          'body:first:page-1:1',
+          'teardown:page',
+          'setup:page:1',
+          'body:fails',
+          'teardown:page',
+          // The failure discards the suite instance; the next test enters a fresh one, on the same database.
+          'afterAll:1',
+          'beforeAll:fake:1',
+          'setup:page:1',
+          'body:after:1',
+          'teardown:page',
+          'afterAll:1',
+          'beforeAll:gadget',
+          'teardown:database',
+        ]);
+      } finally {
+        project.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it(
+    "hands suite hooks and worker fixtures the engine's fixtures when its state outlives an attempt",
+    async () => {
+      const support = `import { test as base } from 'e2e';
+import { log } from './log.ts';
+
+type Gadget = { poke(what: string): Promise<string> };
+export const test = base.extend<{}, { gadget: Gadget }>().extend<{}, { keeper: string }>({
+  keeper: [async ({ gadget }, use) => {
+    log('setup:keeper:' + await gadget.poke('keeper-setup'));
+    await use('kept');
+    log('teardown:keeper:' + await gadget.poke('keeper-teardown'));
+  }, { scope: 'worker' }],
+});
+`;
+      const file = `import { test } from './support.ts';
+import { log } from './log.ts';
+
+test.describe('device suite', () => {
+  test.beforeAll(async ({ gadget, app, screen, keeper }) => {
+    log('beforeAll:' + await gadget.poke('beforeAll') + ':' + keeper + ':' + typeof app.open + ':' + typeof screen.getByRole);
+  });
+  test.afterAll(async ({ gadget }) => log('afterAll:' + await gadget.poke('afterAll')));
+  test('one', async ({ gadget }) => log('body:' + await gadget.poke('one')));
+  test('two', async ({ gadget, keeper }) => log('body:' + await gadget.poke('two') + ':' + keeper));
+});
+
+test.describe('serial', { serial: true }, () => {
+  test.beforeAll(async ({ gadget }) => log('serial:beforeAll:' + await gadget.poke('serial')));
+  test('s1', async ({ gadget }) => log('body:' + await gadget.poke('s1')));
+  test('s2', async ({ gadget }) => log('body:' + await gadget.poke('s2')));
+});
+`;
+      const log = hookLog('device-hooks');
+      const fake = createFakeEngine({ fixtures: true, isolation: 'worker' });
+      const { outcome, project } = await runProject(
+        { 'tests/log.ts': LOG_MODULE, 'tests/support.ts': support, 'tests/device.e2e.ts': file },
+        { config: engineConfig(fake.engine) },
+      );
+      try {
+        assertValidReport(outcome.report);
+        expect(outcome.report.run.errors).toEqual([]);
+        for (const title of ['one', 'two', 's1', 's2']) expect(resultByTitle(outcome, title).status).toBe('passed');
+        expect(log.lines()).toEqual([
+          'setup:keeper:poked keeper-setup',
+          'beforeAll:poked beforeAll:kept:function:function',
+          'body:poked one',
+          'body:poked two:kept',
+          'afterAll:poked afterAll',
+          'serial:beforeAll:poked serial',
+          'body:poked s1',
+          'body:poked s2',
+          'teardown:keeper:poked keeper-teardown',
+        ]);
+        // Each pass of suite hooks outside a serial group runs in a short attempt
+        // of its own; the serial group's hook runs on the group's attempt, and the
+        // worker fixture's teardown in one more before the engine is disposed.
+        expect(fake.events).toEqual([
+          'init',
+          'startAttempt:0',
+          'endAttempt:0',
+          'startAttempt:1',
+          'endAttempt:1',
+          'startAttempt:2',
+          'endAttempt:2',
+          'startAttempt:3',
+          'endAttempt:3',
+          'startAttempt:4',
+          'endAttempt:4',
+          'startAttempt:5',
+          'endAttempt:5',
+          'dispose',
+        ]);
+      } finally {
+        project.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  // The support module for the two cases below: a worker fixture whose
+  // teardown tries the engine's fixture and logs what happened.
+  const keeperSupport = `import { test as base } from 'e2e';
+import { log } from './log.ts';
+
+type Gadget = { poke(what: string): Promise<string> };
+export const test = base.extend<{}, { gadget: Gadget }>().extend<{}, { keeper: string }>({
+  keeper: [async ({ gadget }, use) => {
+    await use('kept');
+    log('teardown:keeper');
+    try {
+      log(await gadget.poke('teardown'));
+    } catch (error) {
+      log('teardown:gadget:' + (error as { code: string }).code + ':' + (error as Error).message);
+    }
+  }, { scope: 'worker' }],
+});
+`;
+
+  it(
+    'still runs afterAll and the worker teardown when the attempt they run in cannot open',
+    async () => {
+      const file = `import { test } from './support.ts';
+import { log } from './log.ts';
+
+test.describe('device suite', () => {
+  test.afterAll(({ keeper }) => log('afterAll:' + keeper));
+  test.afterAll(async ({ gadget }) => log('afterAll:gadget:' + await gadget.poke('afterAll')));
+  test('one', async ({ keeper }) => log('body:' + keeper));
+});
+`;
+      const log = hookLog('device-gone');
+      // The test's attempt opens; every attempt after it fails, the way a device that went away does.
+      const fake = createFakeEngine({
+        fixtures: true,
+        isolation: 'worker',
+        onStartAttempt: (_, index) => {
+          if (index > 0) throw new Error('device went away');
+        },
+      });
+      const { outcome, project } = await runProject(
+        { 'tests/log.ts': LOG_MODULE, 'tests/support.ts': keeperSupport, 'tests/device.e2e.ts': file },
+        { config: engineConfig(fake.engine) },
+      );
+      try {
+        assertValidReport(outcome.report);
+        expect(resultByTitle(outcome, 'one').status).toBe('passed');
+        expect(log.lines()).toEqual([
+          'body:kept',
+          'afterAll:kept',
+          'teardown:keeper',
+          'teardown:gadget:ENGINE_FAILURE:"gadget" is not available to the fixture "keeper" teardown: the attempt suite hooks run in could not open: device went away',
+        ]);
+        // One launch failure for the afterAll pass and one for the teardowns, never one per hook.
+        const errors = outcome.report.run.errors.map(({ code, phase, message }) => ({ code, phase, message }));
+        expect(errors).toEqual([
+          { code: 'ENGINE_FAILURE', phase: 'launch', message: expect.stringContaining('device went away') },
+          {
+            code: 'HOOK_FAILED',
+            phase: 'afterAll',
+            message: expect.stringContaining('"gadget" is not available to the afterAll hook: the attempt suite hooks run in could not open: device went away'),
+          },
+          { code: 'ENGINE_FAILURE', phase: 'launch', message: expect.stringContaining('device went away') },
+        ]);
+      } finally {
+        project.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it(
+    'opens no attempt for afterAll or the worker teardown after an interrupt',
+    async () => {
+      const file = `import { test } from './support.ts';
+import { log } from './log.ts';
+
+test.describe('device suite', () => {
+  test.afterAll(({ keeper }) => log('afterAll:' + keeper));
+  test('fails', ({ keeper }) => {
+    log('body:' + keeper);
+    throw new Error('boom');
+  });
+  test('never runs', () => log('unreachable'));
+});
+`;
+      const log = hookLog('device-interrupted');
+      const fake = createFakeEngine({ fixtures: true, isolation: 'worker' });
+      const { outcome, project } = await runProject(
+        { 'tests/log.ts': LOG_MODULE, 'tests/support.ts': keeperSupport, 'tests/device.e2e.ts': file },
+        { config: engineConfig(fake.engine, { retries: 0 }), runOptions: { maxFailures: 1 } },
+      );
+      try {
+        assertValidReport(outcome.report);
+        expect(resultByTitle(outcome, 'fails').status).toBe('failed');
+        expect(log.lines()).toEqual([
+          'body:kept',
+          'afterAll:kept',
+          'teardown:keeper',
+          'teardown:gadget:INTERRUPTED:"gadget" is not available to the fixture "keeper" teardown: the run was interrupted, so no attempt opens for it',
+        ]);
+        // The failed test leaves its suite instance, so afterAll runs in a
+        // short attempt before the limit stops the run; the teardown, after
+        // the stop, opens none.
+        expect(fake.events).toEqual(['init', 'startAttempt:0', 'endAttempt:0', 'startAttempt:1', 'endAttempt:1', 'dispose']);
+      } finally {
+        project.cleanup();
+      }
+    },
+    120_000,
+  );
+});

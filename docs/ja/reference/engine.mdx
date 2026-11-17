@@ -221,6 +221,11 @@ export interface Engine {
    * capability names; `requires: ['<name>']` gates at selection.
    */
   readonly fixtures?: Readonly<Record<string, EngineFixtureFactory>>;
+  /**
+   * How long the state behind this engine's `fixtures`, `app`, and `screen`
+   * lives; see `EngineIsolation`. Defaults to `attempt`.
+   */
+  readonly isolation?: EngineIsolation;
   /** capability: state - opaque snapshot capture/restore for session reuse. */
   readonly state?: EngineStateCapability;
   /** capability: artifacts - screenshots under the attempt directory, and videos there or at a provider. */
@@ -2073,6 +2078,43 @@ export interface EngineFixtureContext {
    */
   expectable<T extends object, E extends object>(target: T, factory: () => E): T & Expectable<E>;
 }
+```
+
+#### Fixture isolation
+
+`isolation` declares whether what an attempt does stays for the next one. It
+sets the scope of the engine's fixtures, `app`, and `screen`.
+
+```ts
+defineEngine({ name: 'device', /* ... */ isolation: 'worker' });
+```
+
+| Value | Means | Fixture scope |
+| --- | --- | --- |
+| `'attempt'` (default) | `startAttempt` gives each attempt a fresh surface, such as a browser context. | Test fixtures. `beforeAll` and `afterAll` cannot read them. |
+| `'worker'` | What an attempt does stays. A device keeps permissions and installed apps. | [Worker fixtures](/reference/test#worker-fixtures). `beforeAll`, `afterAll`, and worker fixtures get them. |
+
+`@e2e-dev/mobile` declares `'worker'`. On such an engine:
+
+- Each pass of suite hooks runs in a short attempt of its own (`startAttempt`,
+  then `endAttempt`). So do the teardowns of worker fixtures when the worker
+  ends. Make `startAttempt` launch nothing.
+- In a serial group, or a test an `e2e mcp` session runs, the hooks run on the
+  attempt already open. An engine runs one attempt at a time.
+- When the attempt cannot open, or the run was interrupted, the hooks run
+  without the engine's fixtures. See [`beforeAll`](/reference/test#beforeall).
+
+```ts
+/**
+ * What one attempt on an engine leaves for the next. `attempt`: nothing,
+ * `startAttempt` gives each attempt a fresh surface (a browser context), so
+ * the engine's fixtures, `app`, and `screen` are test fixtures, and a suite
+ * hook cannot use them. `worker`: what an attempt does stays (a device keeps
+ * permissions, keychain, and installed apps), so they are worker fixtures,
+ * which `beforeAll`, `afterAll`, and worker-scoped `test.extend()` fixtures
+ * see; a suite hook runs in a short attempt of its own for them.
+ */
+export type EngineIsolation = 'attempt' | 'worker';
 ```
 
 #### 操作を宣言する

@@ -71,7 +71,7 @@ import {
   type ScreenOutput,
 } from '../../src/agent/public.ts';
 import { connectEngine, socketTransport, type EngineManifest } from '../../src/engine/index.ts';
-import type { Report } from '../../src/index.ts';
+import type { Report, TestFixtures, WorkerFixtures } from '../../src/index.ts';
 import type { ToolSet } from 'ai';
 import type { LanguageModelV2, LanguageModelV3, LanguageModelV4 } from '@ai-sdk/provider';
 import { chatgpt } from '../../src/oauth/chatgpt.ts';
@@ -571,6 +571,7 @@ test.runIf(process.env['CI'])('inotify', { tags: ['@fs'], skip: 'reason' }, asyn
 void (test.skipIf(1) satisfies TestRegistrar);
 test.extend<{ x: number }>().skipIf(true)('uses x', async ({ x }) => { x satisfies number; });
 test.extend<{ x: number }>().runIf(true)('uses x', async ({ x }) => { x satisfies number; });
+test.extend<{}, { w: number }>().skipIf(true)('uses a worker fixture', async ({ w }) => { w satisfies number; });
 // @ts-expect-error the registrar registers a test and has no modifiers
 test.skipIf(true).skip('x', async () => {});
 // @ts-expect-error the registrar registers a test and has no modifiers
@@ -763,6 +764,57 @@ test.extend<{ count: number }>({ count: async (_fixtures, use) => { await use('o
 // The zero-argument form still types an engine's contributed fixtures without defining them.
 test.extend<{ device: unknown }>()('types a device', async ({ device }) => { device satisfies unknown; });
 
+// A worker fixture is [fn, { scope: 'worker' }], typed by the second argument, and sees worker fixtures only.
+interface Database {
+  seed(): Promise<void>;
+}
+declare const startDatabase: () => Promise<Database>;
+const withDatabase = withWorkspace.extend<{}, { database: Database }>({
+  database: [
+    async ({ platform }, use) => {
+      platform satisfies string;
+      await use(await startDatabase());
+    },
+    { scope: 'worker' },
+  ],
+});
+withDatabase('reads both scopes', async ({ database, workspace }) => {
+  await database.seed();
+  workspace.id satisfies string;
+});
+// Suite hooks see worker fixtures: the database, not the workspace or the screen.
+withDatabase.beforeAll(async ({ database, platform }) => {
+  await database.seed();
+  platform satisfies string;
+});
+// @ts-expect-error a suite hook does not see a test fixture
+withDatabase.afterAll(({ workspace }) => void workspace);
+// @ts-expect-error a suite hook does not see the built-in test fixtures
+withDatabase.beforeAll((fixtures) => void fixtures.screen);
+withDatabase.beforeEach(async ({ database, workspace }) => {
+  await database.seed();
+  workspace.id satisfies string;
+});
+withWorkspace.extend<{}, { cache: string }>({
+  // @ts-expect-error a worker fixture cannot depend on a test fixture
+  cache: [async ({ workspace }, use) => { await use(workspace.id); }, { scope: 'worker' }],
+});
+// @ts-expect-error a worker fixture needs its scope
+withWorkspace.extend<{}, { cache: string }>({ cache: async (_fixtures, use) => { await use('c'); } });
+// Without type arguments the test fixtures are inferred from the definitions.
+test.extend({ count: async (_fixtures, use: (value: number) => Promise<void>) => { await use(1); } })('infers', async ({ count }) => {
+  count satisfies number;
+});
+// A test fixture may say its scope too.
+test.extend<{ page: string }>({ page: [async (_fixtures, use) => { await use('p'); }, { scope: 'test' }] });
+// A worker fixture of the engine's (a device) reaches the suite hooks through the second type argument.
+const deviceTest = test.extend<{}, { device: { reset(): Promise<void> } } & Pick<TestFixtures, 'app' | 'screen'>>();
+deviceTest.beforeAll(async ({ device, app, screen: deviceScreen }) => {
+  await device.reset();
+  await app.open();
+  void deviceScreen;
+});
+
 // A test, a group, and a call each pin a configured agent by name.
 test('as the buyer', { agent: 'buyer' }, async () => {});
 test('traced on retries', { trace: 'on-all-retries', video: 'retain-on-failure' }, async () => {});
@@ -908,8 +960,9 @@ describe('group', { tags: ['smoke'] }, () => {
 });
 // @ts-expect-error a describe body is synchronous
 describe('async group', async () => {});
-// @ts-expect-error a suite hook sees suite fixtures only
+// @ts-expect-error a suite hook sees worker fixtures only, and screen is a test fixture on the default test
 beforeAll((fixtures) => void fixtures.screen);
+beforeAll((fixtures) => void (fixtures satisfies WorkerFixtures));
 
 // Suite execution accepts project selection, progress, and cancellation; execution settings live in config.
 declare const runResult: RunResult;

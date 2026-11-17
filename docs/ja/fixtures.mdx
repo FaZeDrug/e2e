@@ -66,6 +66,29 @@ test('completes a task', { session: 'admin' }, async ({ screen, task }) => {
 
 拡張を連ねた場合、その中のすべてのフィクスチャが、それを通して登録した全テストで実行されます。テストが名前を指定して受け取るかどうかは関係ありません。上の `test` と `taskTest` のように、セットアップごとに別の `test` をエクスポートしてください。
 
+## Share a fixture across a worker
+
+A worker fixture is set up one time per worker and target, and torn down when
+the worker ends. Use one for a database, a server, or an API client that many
+tests share. Declare it with `{ scope: 'worker' }` and type it with the second
+type argument:
+
+```ts title="tests/fixtures.ts"
+export const test = base.extend<{}, { database: Database }>({
+  database: [async ({}, use) => {
+    const database = await startDatabase();
+    await use(database);
+    await database.stop();
+  }, { scope: 'worker' }],
+});
+```
+
+A worker fixture outlives every test, so it sees worker fixtures only.
+
+Declare it in a module your test files import, not in a test file. A test
+file loads again after a failed test, and a worker fixture it declares gets a
+new instance each time. The old instance stays set up until the worker ends.
+
 ## フックからフィクスチャを参照する
 
 フィクスチャの型を使うには、拡張した `test` にフックを登録します。

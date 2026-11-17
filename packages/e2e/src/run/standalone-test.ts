@@ -26,11 +26,10 @@ import type { ExpectedFailureInfo } from '@e2e-dev/core/lib/internal/expected-fa
 import { isRuntimeSkip, type RuntimeSkip } from '../internal/skip.ts';
 import { settleExpectedFailure } from './expected-failure.ts';
 import { withAbort, withTimeout } from '@e2e-dev/core/lib/internal/time';
-import type { SetupFn } from '@e2e-dev/core/lib/types';
 import type { AttemptBudget } from '@e2e-dev/core/lib/run/budget';
 import type { TargetExecutor } from './execute.ts';
 import { classifyAttemptStatus } from '@e2e-dev/core/lib/run/engine-sessions';
-import { createExtendedFixtures, type ExtendedFixtures } from './extended-fixtures.ts';
+import { bindFixtures, type BoundFixtures } from './fixture-pool.ts';
 import { captureFailureEvidence } from './failure-evidence.ts';
 import type { ArtifactSink, AttemptFixtures } from '@e2e-dev/core/lib/run/fixtures';
 import { findRegistered, runHook, type Realm } from './realm.ts';
@@ -268,8 +267,9 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
     // A rejection nobody handled is charged to this turn, as a run's worker charges the attempt in flight.
     strayInTurn = (cause) => (cutBody === undefined ? fail(cause, phase) : cutBody(cause));
 
-    const hookFailure = await executor.realms.enterScopes(realm, registered);
-    let extended: ExtendedFixtures | undefined;
+    // The suite hooks run on this attempt: an engine runs one at a time.
+    const hookFailure = await executor.realms.enterScopes(realm, registered, env.session);
+    let bound: BoundFixtures | undefined;
     if (hookFailure !== undefined) {
       fail(new E2EError('test', hookFailure.code, hookFailure.message), 'beforeAll');
     } else {
@@ -291,10 +291,20 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
         },
         publication.signal,
       );
+      // Worker fixtures read their built-ins off this attempt while its code runs.
+      const leaveWorkerFixtures = executor.workerFixtures.enter(env.fixtures);
       // Whatever happens below, the slot is free for the next test once the body is done.
       try {
-        extended = createExtendedFixtures(registered.fixtures, env.fixtures, env.target.engine?.name ?? 'none', budget.signal);
-        const fixtures = extended;
+        const attemptFixtures = bindFixtures({
+          target: env.target,
+          chain: registered.fixtures,
+          scope: 'test',
+          builtIns: env.fixtures,
+          pool: executor.workerFixtures,
+          signal: budget.signal,
+        });
+        bound = attemptFixtures;
+        const { fixtures } = attemptFixtures;
         /** Set once the body's race settled: a body cut short that runs on is no longer the test's to report. */
         let bodyOver = false;
         const enter = (next: RunPhase): void => {
@@ -315,14 +325,14 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
         const mainWork = async (): Promise<void> => {
           try {
             enter('beforeEach');
-            await fixtures.setUp();
+            await attemptFixtures.setUp();
             budget.signal.throwIfAborted();
             for (const hook of executor.realms.hooksFor(realm, registered, 'beforeEach')) {
-              await hook.fn(env.fixtures);
+              await hook.fn(fixtures);
               budget.signal.throwIfAborted();
             }
             enter('body');
-            await (registered.fn as SetupFn)(env.fixtures);
+            await registered.fn(fixtures);
           } catch (cause) {
             const notAwaited = await abandonNotAwaited();
             if (isRuntimeSkip(cause)) throw cause;
@@ -377,6 +387,7 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
       } finally {
         steps.phase = undefined;
         publication.abort();
+        leaveWorkerFixtures();
       }
     }
 
@@ -428,12 +439,13 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
       durationMs: Date.now() - startedMs,
       steps: steps.all().slice(0, stepsRan),
     };
+    const attemptFixtures = bound;
     const teardowns =
-      extended === undefined
+      attemptFixtures === undefined
         ? []
         : [
-            ...executor.realms.hooksFor(realm, registered, 'afterEach').map((hook) => ({ label: `${hook.kind} hook`, run: () => hook.fn(env.fixtures) })),
-            ...extended.teardowns().map((teardown) => ({ label: `fixture "${teardown.name}" teardown`, run: teardown.run })),
+            ...executor.realms.hooksFor(realm, registered, 'afterEach').map((hook) => ({ label: `${hook.kind} hook`, run: () => hook.fn(attemptFixtures.fixtures) })),
+            ...attemptFixtures.teardowns().map((teardown) => ({ label: `fixture "${teardown.name}" teardown`, run: teardown.run })),
           ];
     return { started: { realm, teardowns }, outcome };
   };
@@ -469,6 +481,7 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
         // As after a run's body: a soft matcher in a teardown hook finds the collection closed.
         soft.close();
         const publication = new AbortController();
+        const leaveWorkerFixtures = executor.workerFixtures.enter(env.fixtures);
         try {
           publishAttempt({ attemptId, owner: 'host', testKind: 'test', assertionTimeout: config.assertionTimeout, budget, soft, polls: new PollScope('the test teardown') }, publication.signal);
           steps.phase = 'afterEach';
@@ -482,8 +495,9 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
             }
           }
           await executor.settleAttempt(env.session, attemptId).catch((cause: unknown) => errors.push(serialize(cause, 'afterEach')));
-          await executor.realms.leave(started.realm).catch((cause: unknown) => errors.push(serialize(cause, 'afterAll')));
+          await executor.realms.leave(started.realm, env.session).catch((cause: unknown) => errors.push(serialize(cause, 'afterAll')));
         } finally {
+          leaveWorkerFixtures();
           steps.phase = undefined;
           publication.abort();
           strayInTurn = undefined;

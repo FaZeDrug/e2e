@@ -9,7 +9,7 @@
  */
 
 import { MAX_PARAMS_BYTES } from '@e2e-dev/core/lib/agent/act-validation';
-import type { ModuleRegistration, RegisteredTest } from '../collect/registry.ts';
+import type { ModuleRegistration, RegisteredTest, TestBody } from '../collect/registry.ts';
 import { selectTargets } from '../collect/select.ts';
 import { discoverConfig, loadConfigModule, missingConfigError } from '../config/load.ts';
 import { missingModelError, resolveAgentConfig } from '@e2e-dev/core/lib/config/agent';
@@ -360,7 +360,8 @@ function exploreRegistration(
     },
     sessions: [],
     tags: [],
-    fn: createExploreBody({ state, stepTimeoutMs: STEP_TIMEOUT_MS, openApp, accounts, session, change: brief === undefined ? undefined : { skippable } }),
+    // Registered by hand, so typed here the way `test()` types a body: it receives the attempt's fixtures.
+    fn: createExploreBody({ state, stepTimeoutMs: STEP_TIMEOUT_MS, openApp, accounts, session, change: brief === undefined ? undefined : { skippable } }) as TestBody,
     fixtures: [],
     group: undefined,
     mode: 'normal',

@@ -720,10 +720,29 @@ export interface SetupFixtures extends TestFixtures {
   readonly session: SetupSession;
 }
 
-export interface SuiteFixtures {
+/**
+ * How long one fixture instance lives. `test`, the default, is one instance
+ * per test attempt, shared by its `beforeEach` hooks, its body, and its
+ * `afterEach` hooks. `worker` is one instance per worker and target, set up
+ * the first time a test or suite hook needs it and torn down when the worker
+ * ends.
+ */
+export type FixtureScope = 'test' | 'worker';
+
+/**
+ * The fixtures that outlive a test: what `beforeAll`, `afterAll`, and a
+ * worker-scoped `test.extend()` fixture receive. An engine whose state
+ * outlives an attempt (a device keeps permissions and installed apps) adds
+ * its own fixtures, `app`, and `screen` here; on an engine that gives each
+ * attempt a fresh surface (a browser context) they are test fixtures.
+ */
+export interface WorkerFixtures {
   /** The target's platform label: `web`, `ios`, `android`, or an engine's own string. */
   readonly platform: string;
 }
+
+/** @deprecated `beforeAll` and `afterAll` receive the worker fixtures: use `WorkerFixtures`. */
+export type SuiteFixtures = WorkerFixtures;
 
 export interface TestOptions {
   /** Attempt deadline in milliseconds; defaults to `config.timeout`. Innermost wins. */
@@ -792,10 +811,10 @@ export type TestFn<Fixtures = TestFixtures> = (fixtures: Fixtures) => void | Pro
 export type SetupFn<Fixtures = TestFixtures> = (
   fixtures: Fixtures & SetupFixtures,
 ) => void | Promise<void>;
-/** A `beforeEach` or `afterEach` body. */
+/** A hook body: `beforeEach` and `afterEach` get the test's fixtures, `beforeAll` and `afterAll` its worker fixtures. */
 export type TestHookFn<Fixtures = TestFixtures> = (fixtures: Fixtures) => void | Promise<void>;
-/** A `beforeAll` or `afterAll` body. */
-export type SuiteHookFn = (fixtures: SuiteFixtures) => void | Promise<void>;
+/** @deprecated use `TestHookFn<WorkerFixtures>`. */
+export type SuiteHookFn = TestHookFn<WorkerFixtures>;
 /**
  * Defines one fixture: everything before `await use(value)` is its setup,
  * everything after is its teardown. The body, its hooks, and later fixtures
@@ -806,14 +825,28 @@ export type FixtureFn<Fixtures, Value> = (
   fixtures: Fixtures,
   use: (value: Value) => Promise<void>,
 ) => Promise<void>;
+/** A test fixture: its function, or the function and `{ scope: 'test' }`. */
+export type TestFixtureDefinition<Fixtures, Value> =
+  | FixtureFn<Fixtures, Value>
+  | readonly [FixtureFn<Fixtures, Value>, { readonly scope?: 'test' }];
+/** A worker fixture: its function and `{ scope: 'worker' }`. It sees worker fixtures only. */
+export type WorkerFixtureDefinition<Worker, Value> = readonly [FixtureFn<Worker, Value>, { readonly scope: 'worker' }];
 /**
- * One definition per fixture `test.extend()` adds. A definition sees the
- * fixtures of the `test` it extends, not its siblings: a fixture that needs
- * another one goes in a chained `extend()`. A name the base already has is a
- * type error (and a `COLLECTION_ERROR` at runtime).
+ * One definition per fixture `test.extend()` adds: `Extra` holds the test
+ * fixtures, `ExtraWorker` the worker fixtures. A definition sees the fixtures
+ * of the `test` it extends, not its siblings: a fixture that needs another
+ * one goes in a chained `extend()`. A test fixture sees `Base`, every fixture
+ * a test sees; a worker fixture sees `Worker` only, since it outlives every
+ * test fixture. A name the base already has is a type error (and a
+ * `COLLECTION_ERROR` at runtime).
  */
-export type FixtureDefinitions<Base, Extra> = {
-  readonly [K in keyof Extra]: K extends keyof Base ? never : FixtureFn<Base, Extra[K]>;
+export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
+  readonly [K in keyof Extra]: K extends keyof Base ? never : TestFixtureDefinition<Base, Extra[K]>;
+} & {
+  // Not inferred: an `extend({ ... })` without type arguments infers its test
+  // fixtures from the definitions, as before worker fixtures; a worker
+  // fixture is declared through the second type argument.
+  readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra ? never : WorkerFixtureDefinition<Worker, NoInfer<ExtraWorker>[K]>;
 };
 /** A `describe` body. An async body is a type error. */
 export type SynchronousBody<Result> = Extract<Result, PromiseLike<unknown>> extends never
@@ -831,16 +864,21 @@ export interface TestCase {
 }
 
 /** The two call forms of `test`, shared with what `test.skipIf` and `test.runIf` return. */
-export interface TestRegistrar<Fixtures = TestFixtures> {
+export interface TestRegistrar<Fixtures = TestFixtures & WorkerFixtures> {
   /** Registers one test synchronously during module evaluation. */
   (title: string, fn: TestFn<Fixtures>): TestCase;
   /** Registers one configured test synchronously during module evaluation. */
   (title: string, options: TestOptions, fn: TestFn<Fixtures>): TestCase;
 }
 
-export interface TestAPI<Fixtures = TestFixtures> extends TestRegistrar<Fixtures> {
+/**
+ * The `test` function and its members. `Fixtures` are what a test attempt
+ * sets up for itself; `Worker` the fixtures that outlive a test, which the
+ * test, its hooks, and the suite hooks all see.
+ */
+export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> extends TestRegistrar<Fixtures & Worker> {
   /** Registers one skipped test. */
-  skip(title: string, fn: TestFn<Fixtures>): TestCase;
+  skip(title: string, fn: TestFn<Fixtures & Worker>): TestCase;
   /**
    * Inside a running test: skips it when `condition` is true (or always,
    * with no condition) by throwing, so nothing after the call runs. The
@@ -864,14 +902,14 @@ export interface TestAPI<Fixtures = TestFixtures> extends TestRegistrar<Fixtures
    * rejects the call: set `skip` on the serial `describe` instead. A Promise
    * condition also fails the call: await it first.
    */
-  skipIf<Condition>(condition: SynchronousCondition<Condition>): TestRegistrar<Fixtures>;
+  skipIf<Condition>(condition: SynchronousCondition<Condition>): TestRegistrar<Fixtures & Worker>;
   /**
    * Returns a function that registers one test, like `test(title, fn)`:
    * skipped when `condition` is falsy, `test.skipIf(!condition)`.
    */
-  runIf<Condition>(condition: SynchronousCondition<Condition>): TestRegistrar<Fixtures>;
+  runIf<Condition>(condition: SynchronousCondition<Condition>): TestRegistrar<Fixtures & Worker>;
   /** Registers one test that is expected to fail. */
-  fail(title: string, fn: TestFn<Fixtures>): TestCase;
+  fail(title: string, fn: TestFn<Fixtures & Worker>): TestCase;
   /**
    * Inside a running test: marks it expected to fail when `condition` is
    * true (or always, with no condition). The body keeps running. A test
@@ -884,9 +922,9 @@ export interface TestAPI<Fixtures = TestFixtures> extends TestRegistrar<Fixtures
   fail(condition: boolean, reason?: string): void;
   fail(reason?: string): void;
   /** Registers one focused local test. CI rejects focused tests. */
-  only(title: string, fn: TestFn<Fixtures>): TestCase;
+  only(title: string, fn: TestFn<Fixtures & Worker>): TestCase;
   /** Registers one setup test with statically declared session outputs. */
-  setup(title: string, options: SetupOptions, fn: SetupFn<Fixtures>): TestCase;
+  setup(title: string, options: SetupOptions, fn: SetupFn<Fixtures & Worker>): TestCase;
   /**
    * Returns the same runtime `test`, typed with an engine's contributed
    * fixtures. A pure type refinement, the fixtures still resolve from the
@@ -895,7 +933,7 @@ export interface TestAPI<Fixtures = TestFixtures> extends TestRegistrar<Fixtures
    *
    *   export const test = base.extend<{ device: Device }>();
    */
-  extend<Extra>(): TestAPI<Fixtures & Extra>;
+  extend<Extra = {}, ExtraWorker = {}>(): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
   /**
    * Returns a new `test` whose registrations carry these fixture
    * definitions on top of the ones it already had. Each attempt sets them up
@@ -909,8 +947,22 @@ export interface TestAPI<Fixtures = TestFixtures> extends TestRegistrar<Fixtures
    *       await workspace.cleanup();
    *     },
    *   });
+   *
+   * A worker fixture (the second type argument, `[fn, { scope: 'worker' }]`)
+   * is set up once per worker and target, the first time a test or suite
+   * hook of the chain needs it, and torn down when the worker ends:
+   *
+   *   export const test = base.extend<{}, { database: Database }>({
+   *     database: [async ({}, use) => {
+   *       const database = await startDatabase();
+   *       await use(database);
+   *       await database.stop();
+   *     }, { scope: 'worker' }],
+   *   });
    */
-  extend<Extra>(fixtures: FixtureDefinitions<Fixtures, Extra>): TestAPI<Fixtures & Extra>;
+  extend<Extra = {}, ExtraWorker = {}>(
+    fixtures: FixtureDefinitions<Fixtures & Worker, Extra, Worker, ExtraWorker>,
+  ): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
   /** Declares a group synchronously. */
   describe<Result>(title: string, body: SynchronousBody<Result>): void;
   /** Declares a configured group synchronously. */
@@ -919,14 +971,14 @@ export interface TestAPI<Fixtures = TestFixtures> extends TestRegistrar<Fixtures
     options: DescribeOptions,
     body: SynchronousBody<Result>,
   ): void;
-  /** Registers a test-attempt setup hook. */
-  beforeEach(fn: TestHookFn<Fixtures>): void;
-  /** Registers a test-attempt teardown hook. */
-  afterEach(fn: TestHookFn<Fixtures>): void;
-  /** Registers a suite-instance setup hook. */
-  beforeAll(fn: SuiteHookFn): void;
-  /** Registers a suite-instance teardown hook. */
-  afterAll(fn: SuiteHookFn): void;
+  /** Registers a test-attempt setup hook: it runs after the test's fixtures are set up. */
+  beforeEach(fn: TestHookFn<Fixtures & Worker>): void;
+  /** Registers a test-attempt teardown hook: it runs before the test's fixtures are torn down. */
+  afterEach(fn: TestHookFn<Fixtures & Worker>): void;
+  /** Registers a suite setup hook, run once per describe between attempts, with the worker fixtures. */
+  beforeAll(fn: TestHookFn<Worker>): void;
+  /** Registers a suite teardown hook, run once per describe between attempts, with the worker fixtures. */
+  afterAll(fn: TestHookFn<Worker>): void;
 }
 
 /**

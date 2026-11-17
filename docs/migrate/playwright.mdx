@@ -173,10 +173,11 @@ run only in a browser, so a test that uses it declares
 | `import { test, expect } from '@playwright/test'` | `import { test } from '@e2e-dev/web'` and `import { expect } from 'e2e'` |
 | `{ page }` in a test | `{ screen, app, browser }` |
 | `test()`, `test.describe()`, `test.only`, `test.fail()`, `test.skip(title, fn)`, `test.skip(condition, reason)` | the same; the conditional `skip` works inside a test body or `beforeEach` |
-| `beforeEach`, `afterEach`, `beforeAll`, `afterAll` | the same, with no title; `beforeAll` and `afterAll` get the `platform` fixture only |
+| `beforeEach`, `afterEach`, `beforeAll`, `afterAll` | the same, with no title; `beforeAll` and `afterAll` get worker fixtures, not `browser`, `app`, or `screen` |
 | `test.describe.skip`, `test.describe.serial`, `describe.configure({ mode: 'serial', retries, timeout })` | `test.describe(title, { skip, serial, retries, timeout }, fn)` |
 | `{ tag: '@smoke' }` | `{ tags: ['smoke'] }` on a test or group |
 | `test.extend({ fixture })` | the same shape; a fixture that needs another goes in a chained `extend` |
+| `[fn, { scope: 'worker' }]` fixtures | the same, typed with the second type argument of `extend` |
 
 </Accordion>
 <Accordion title="CLI">
@@ -286,7 +287,7 @@ purpose. Use the workaround, or keep the test in Playwright.
 | `test.step()`, `testInfo.attach()` | Each call is already a named step in the report; `app.screenshot(label)` attaches a screenshot |
 | `test.info()`, `testInfo` in hooks and fixtures, `annotations` | Your own fixture or module state; an issue id in the title or a tag |
 | `fullyParallel`, `describe.configure({ mode: 'parallel' })` | Split the file. Files run in parallel, a file's tests in order |
-| On-demand, worker-scoped, and `{ auto: true }` fixtures; `mergeTests()` | One `test` for each fixture set; `beforeAll` for per-file setup |
+| On-demand and `{ auto: true }` fixtures; `mergeTests()` | One `test` for each fixture set; `beforeAll` for per-file setup |
 | `globalSetup`, `globalTeardown`, a `webServer` array | A script around the run, or one `app.command` that starts every process |
 | `projects[].testMatch`, `testDir`, `testIgnore`, `grep` | `platforms` or tags on the tests, or one run for each target |
 | `--ui`, `npx playwright show-report`, `--reporter html` | `--watch --headed`; open `.e2e/report.html`, which `htmlReporter()` writes |

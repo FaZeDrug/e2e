@@ -73,6 +73,30 @@ uses `project` through a second `extend`. Teardown runs in reverse order.
 Every fixture in a chain runs for every test registered through it, named
 or not. Export one `test` for each setup, like `test` and `taskTest` above.
 
+## Share a fixture across a worker
+
+A worker fixture is set up one time per worker and target, and torn down when
+the worker ends. Use one for a database, a server, or an API client that many
+tests share. Declare it with `{ scope: 'worker' }` and type it with the second
+type argument:
+
+```ts title="tests/fixtures.ts"
+export const test = base.extend<{}, { database: Database }>({
+  database: [async ({}, use) => {
+    const database = await startDatabase();
+    await use(database);
+    await database.stop();
+  }, { scope: 'worker' }],
+});
+```
+
+A worker fixture outlives every test, so it sees worker fixtures only.
+
+Declare it in a module your test files import, not in a test file. A test
+file loads again after a failed test and for each serial group and setup test,
+and a worker fixture it declares gets a
+new instance each time. The old instance stays set up until the worker ends.
+
 ## Read fixtures in hooks
 
 Register the hook on your extended `test` to get the fixture types:
@@ -82,6 +106,11 @@ taskTest.beforeEach(async ({ screen, project }) => {
   await expect(screen.getByRole('heading', project)).toBeVisible();
 });
 ```
+
+`beforeAll` and `afterAll` get worker fixtures only. A device keeps its state
+between tests, so on mobile they also get `device`, `app`, and `screen`. A
+browser test gets a new context, so put UI setup in `beforeEach`. See
+[Hooks](/reference/test#hooks).
 
 ## When a fixture fails
 

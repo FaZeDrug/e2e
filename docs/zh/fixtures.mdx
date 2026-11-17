@@ -66,6 +66,29 @@ test('completes a task', { session: 'admin' }, async ({ screen, task }) => {
 
 无论是否在参数中列出，链中的每个测试夹具都会为通过它注册的每个测试运行。为每种准备流程导出一个 `test`，例如上面的 `test` 和 `taskTest`。
 
+## Share a fixture across a worker
+
+A worker fixture is set up one time per worker and target, and torn down when
+the worker ends. Use one for a database, a server, or an API client that many
+tests share. Declare it with `{ scope: 'worker' }` and type it with the second
+type argument:
+
+```ts title="tests/fixtures.ts"
+export const test = base.extend<{}, { database: Database }>({
+  database: [async ({}, use) => {
+    const database = await startDatabase();
+    await use(database);
+    await database.stop();
+  }, { scope: 'worker' }],
+});
+```
+
+A worker fixture outlives every test, so it sees worker fixtures only.
+
+Declare it in a module your test files import, not in a test file. A test
+file loads again after a failed test, and a worker fixture it declares gets a
+new instance each time. The old instance stays set up until the worker ends.
+
 ## 在钩子中读取测试夹具
 
 在扩展后的 `test` 上注册钩子，以获取测试夹具类型：
