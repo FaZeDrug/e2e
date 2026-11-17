@@ -19,6 +19,7 @@ import { pairRecordings, type TestTargetPair } from '../collect/select.ts';
 import type { ArtifactStore } from '@e2e-dev/core/lib/types';
 import { attemptSegments, createAttemptArtifacts, resultSegment } from '@e2e-dev/core/lib/run/artifacts';
 import { AttemptBudget } from '@e2e-dev/core/lib/run/budget';
+import { planAttempt, planSuiteHook } from '../collect/fixture-plan.ts';
 import { attemptlessBuiltIns, bindFixtures, WorkerFixturePool } from './fixture-pool.ts';
 import { captureFailureEvidence } from './failure-evidence.ts';
 import { createFixtures } from '@e2e-dev/core/lib/run/fixtures';
@@ -193,7 +194,7 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
       const attempt = this.openSuiteAttempt(undefined);
       for (const teardown of teardowns) {
         try {
-          await attempt.within(`fixture "${teardown.name}" teardown`, this.config.cleanupTimeout, () => teardown.run());
+          await attempt.within(`fixture "${teardown.name}" teardown`, this.config.cleanupTimeout, teardown.usesEngine, () => teardown.run());
         } catch (cause) {
           this.runErrors.push({ error: serializeError(classifyError(cause), { phase: 'cleanup', projectRoot: this.config.projectRoot }) });
         }
@@ -207,12 +208,14 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
   private openSuiteHooks(shared: TargetSession | undefined): SuiteHookSession {
     const attempt = this.openSuiteAttempt(shared);
     return {
-      run: (hook, timeoutMs) =>
-        attempt.within(`${hook.kind} hook`, timeoutMs, async (builtIns) => {
-          const bound = bindFixtures({ target: this.target, chain: hook.fixtures, scope: 'worker', builtIns, pool: this.workerFixtures });
+      run: async (hook, timeoutMs) => {
+        const plan = planSuiteHook(this.target, hook);
+        await attempt.within(`${hook.kind} hook`, timeoutMs, plan.usesEngine, async (builtIns) => {
+          const bound = bindFixtures({ plan, builtIns, pool: this.workerFixtures });
           await bound.setUp();
           await hook.fn(bound.fixtures);
-        }),
+        });
+      },
       close: () => attempt.close(),
     };
   }
@@ -225,13 +228,14 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
    * outlives an attempt it also sees the engine's fixtures, `app`, and
    * `screen`, from `shared` (the attempt already open: a serial group's or a
    * hosted test's, since an engine runs one attempt at a time) or from a
-   * short attempt of its own, opened at the first `within` and ended by
-   * `close`. When that attempt cannot open, or the run was interrupted, the
+   * short attempt of its own, opened at the first `within` whose code names
+   * one of them (`usesEngine`) and ended by `close`; code that names none
+   * opens nothing. When that attempt cannot open, or the run was interrupted, the
    * code runs without it (see `acquire`). Its steps and artifacts are no
    * test's: a hook that fails is a run error naming its scope.
    */
   private openSuiteAttempt(shared: TargetSession | undefined): {
-    within(label: string, timeoutMs: number, body: (builtIns: object) => Promise<void>): Promise<void>;
+    within(label: string, timeoutMs: number, usesEngine: boolean, body: (builtIns: object) => Promise<void>): Promise<void>;
     close(): Promise<void>;
   } {
     type HookAttempt = { readonly builtIns: object; readonly budget: AttemptBudget; close(): Promise<void> };
@@ -302,8 +306,16 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
      * `screen` then fails with the reason. After an interrupt no attempt
      * starts: a forced one disposes beside the unit's attempt, still open.
      */
-    const acquire = async (label: string): Promise<{ readonly attempt?: HookAttempt; readonly builtIns: object }> => {
+    const acquire = async (label: string, usesEngine: boolean): Promise<{ readonly attempt?: HookAttempt; readonly builtIns: object }> => {
       if (isolated) return { builtIns: attemptlessBuiltIns(this.target) };
+      if (!usesEngine) {
+        return {
+          builtIns: attemptlessBuiltIns(
+            this.target,
+            (name) => new ConfigurationError('UNSUPPORTED_CAPABILITY', `"${name}" is not available to the ${label}: it names no engine fixture in its first parameter, so no attempt opened for it`),
+          ),
+        };
+      }
       if (opened === undefined && this.interruptSignal.aborted) {
         return {
           builtIns: attemptlessBuiltIns(
@@ -330,8 +342,8 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
       return { attempt, builtIns: attempt.builtIns };
     };
     return {
-      within: async (label, timeoutMs, body) => {
-        const { attempt, builtIns } = await acquire(label);
+      within: async (label, timeoutMs, usesEngine, body) => {
+        const { attempt, builtIns } = await acquire(label, usesEngine);
         const hookAbort = attempt?.budget.enter(this.interruptSignal, timeoutMs);
         const leave = this.workerFixtures.enter(builtIns);
         try {
@@ -851,6 +863,12 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
     };
 
     try {
+      const beforeEachHooks = this.realms.hooksFor(realm, registered, 'beforeEach');
+      const afterEachHooks = this.realms.hooksFor(realm, registered, 'afterEach');
+      // Before the session launches: a fixture rule the test breaks fails the
+      // attempt with nothing set up. What the body and these hooks name
+      // decides which fixtures of the test's own chain the attempt sets up.
+      const plan = planAttempt(this.target, registered, [...beforeEachHooks, ...afterEachHooks]);
       const session =
         shared?.session ??
         (await this.launchSession({ session: pair.options.session, recordings }, attemptId, artifacts.dir, attemptAbort.signal));
@@ -963,14 +981,9 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
         attemptEnd.signal,
       );
 
-      const beforeEachHooks = this.realms.hooksFor(realm, registered, 'beforeEach');
-      const afterEachHooks = this.realms.hooksFor(realm, registered, 'afterEach');
-      // The test's own chain decides the fixture set; hooks get the same
-      // object, whichever `test` they were registered through.
+      // Hooks get the same object, whichever `test` they were registered through.
       const bound = bindFixtures({
-        target: this.target,
-        chain: registered.fixtures,
-        scope: 'test',
+        plan,
         builtIns,
         pool: this.workerFixtures,
         signal: attemptAbort.signal,
@@ -1114,8 +1127,9 @@ export class TargetExecutor extends EngineSessions implements SerialHost {
       // that overruns has its own operations cancelled, not the next hook's.
       // Only a run interrupt still cuts cleanup short. Fixture teardowns
       // follow the hooks, last set up first, and fail the attempt like them.
+      // A hook that names a fixture whose setup failed is skipped.
       const teardowns = [
-        ...afterEachHooks.map((hook) => ({ label: `${hook.kind} hook`, run: () => hook.fn(fixtures) })),
+        ...afterEachHooks.filter((hook) => bound.ready(hook.fn)).map((hook) => ({ label: `${hook.kind} hook`, run: () => hook.fn(fixtures) })),
         ...bound.teardowns().map((teardown) => ({
           label: `fixture "${teardown.name}" teardown`,
           run: teardown.run,

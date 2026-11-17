@@ -169,19 +169,31 @@ test timeout; `afterAll` runs on `config.cleanupTimeout`. A failing
 `beforeAll` and `afterAll` get worker fixtures only: `platform`, worker
 fixtures from `test.extend`, and on mobile `device`, `app`, and `screen`
 (a device keeps its state between tests). On web, `browser`, `app`, and
-`screen` are test fixtures, so UI setup goes in `beforeEach`. Reading a test
-fixture in a suite hook is `HOOK_FAILED` naming it. On mobile, when no device
+`screen` are test fixtures, so UI setup goes in `beforeEach`. Naming a test
+fixture in a suite hook is a `COLLECTION_ERROR` naming it. On mobile a suite
+hook that names none of `device`, `app`, `screen` opens no device attempt; when no device
 attempt can open for the hooks or the run was interrupted, they still run and
 reading `device`, `app`, or `screen` throws the reason.
 
 ## Fixtures
 
-Built-in fixtures are lazy; destructure them. Your own `test.extend`
-fixtures set up for every test registered through that `test`, destructured
-or not, so a state-changing fixture belongs on its own `test`. A worker
+Fixtures are set up on demand. A test body, a hook, and a fixture function
+name what they use by destructuring their first parameter
+(`async ({ app, screen }) => {}`); `async (fixtures) => {}`, `async (_, use)`,
+and a rest property are `COLLECTION_ERROR`, and a fixture that needs nothing
+takes `({}, use)`. A test sets up the `test.extend` fixtures its body and its
+`beforeEach` and `afterEach` hooks name, and the ones those fixtures name
+(same `extend` call or an earlier one, any order; a cycle is
+`COLLECTION_ERROR`). A fixture nothing names does not run: one that exists
+for its side effect takes `[fn, { auto: true }]`, set up for every test, or
+`[fn, { scope: 'worker', auto: true }]`, once per worker. A name the target
+has no fixture for fails the run at collection with the file and line; a test
+skipped on that target (`platforms`, `requires`, `test.skipIf`) is not
+checked there. An `afterEach` that names a fixture whose setup failed is
+skipped. A worker
 fixture (`[fn, { scope: 'worker' }]`, second type argument of `extend`) is
-set up once per worker and target, torn down when the worker ends, and sees
-worker fixtures only. Declare it in a module the test files import: a test
+set up once per worker and target by the first test or suite hook that names
+it, torn down when the worker ends, and sees worker fixtures only. Declare it in a module the test files import: a test
 file reloads after a failure and for each serial group and setup test, and a
 worker fixture it declares gets a new
 instance while the old one stays set up until the worker ends.

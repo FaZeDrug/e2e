@@ -265,7 +265,7 @@ test.beforeEach(async ({ app }) => {
 
 - 最も外側のグループから実行し、同じグループ内では宣言順に実行します。
 - `beforeEach` とテスト本体は、テストのタイムアウトを共有します。
-- テストのフィクスチャを受け取ります。
+- テストのフィクスチャを受け取ります。フックが指定したフィクスチャは、適用されるすべてのテストでセットアップします。[独自のフィクスチャ](#your-own-fixtures)を参照してください。
 
 #### `afterEach`
 
@@ -279,7 +279,8 @@ test.afterEach(async ({ app }) => {
 
 - 最も内側のグループから、宣言とは逆の順序で実行します。失敗やタイムアウトの後も実行します。
 - 各 `afterEach` フックには、動作するフィクスチャと独立した `cleanupTimeout` が与えられます。そのため、テスト本体がタイムアウトしても、後処理でアプリを操作できます。
-- テストのフィクスチャを受け取ります。
+- テストのフィクスチャを受け取ります。フックが指定したフィクスチャは、最初の `beforeEach` より前に、テストのタイムアウト内でセットアップします。フックの開始時ではありません。
+- セットアップに失敗したフィクスチャを指定したフックはスキップします。
 
 #### `beforeAll`
 
@@ -539,17 +540,20 @@ test.setup('authenticate', { sessions: ['member', 'admin'] }, async ({ session }
 
 それ以外は、ターゲットのエンジンが提供するフィクスチャか、[独自のフィクスチャ](#your-own-fixtures)です。`@e2e-dev/web` は [`browser`](/reference/web)、デバイスエンジンは `device` を提供します。
 
+テスト本体、フック、フィクスチャ関数は、最初の引数の分割代入で、使うフィクスチャを指定します（`async ({ app, screen }) => {}`）。e2e は関数のソースから名前を読み取ります。
+
 | エラー | 発生条件 |
 | --- | --- |
-| `UNSUPPORTED_CAPABILITY` | エンジンが提供しないフィクスチャをテストが使おうとした場合。`requires: ['browser']` を宣言すれば、選択時のスキップにできます。 |
+| `COLLECTION_ERROR` | ターゲットで実行するテスト、またはそのフックが、ターゲットにないフィクスチャを指定した場合。テストはひとつも実行されません。`requires: ['browser']`、`platforms`、`test.skipIf` を宣言すれば、そのターゲットでのスキップにできます。 |
+| `COLLECTION_ERROR` | テスト本体、フック、フィクスチャ関数が、オブジェクト全体（`async (fixtures) => {}`）、残余プロパティ（`{ app, ...rest }`）、または計算プロパティを受け取る場合。 |
 
 <Note>
-上記のフィクスチャは遅延取得します。パラメーターリストで分割代入すると、テスト本体の最初の文より前に取得します。[独自のフィクスチャ](#your-own-fixtures)は遅延取得ではありません。
+上記のフィクスチャは遅延取得します。パラメーターリストで分割代入すると、テスト本体の最初の文より前に取得します。[独自のフィクスチャ](#your-own-fixtures)は、最初の `beforeEach` より前にセットアップします。
 </Note>
 
 #### 独自のフィクスチャ
 
-`test.extend(fixtures)` は、各テストの前に準備し、失敗した場合も含めて終了後に後処理するリソースを定義します。各フィクスチャ関数では、`await use(value)` より前でリソースを準備します。テストに `value` が渡り、`use` より後のコードで後処理します。スイート全体の例を含むガイドは、[フィクスチャの作成](/fixtures)を参照してください。
+`test.extend(fixtures)` は、それを指定した各テストの前に準備し、失敗した場合も含めて終了後に後処理するリソースを定義します。各フィクスチャ関数では、`await use(value)` より前でリソースを準備します。テストに `value` が渡り、`use` より後のコードで後処理します。スイート全体の例を含むガイドは、[フィクスチャの作成](/fixtures)を参照してください。
 
 ```ts
 import { test as base } from '@e2e-dev/web';
@@ -568,21 +572,32 @@ test('renames the workspace', async ({ workspace, screen }) => {
 });
 ```
 
-定義の型から参照できるのは、拡張元の `test` のフィクスチャです。同じ呼び出し内のほかのフィクスチャではありません。別のフィクスチャに依存する場合は、2 回目の `extend` をつなげます。`base.extend({ a }).extend({ b })` なら、`b` はすでに `a` を持つフィクスチャオブジェクトを受け取ります。
+フィクスチャは必要に応じてセットアップします。対象は、そのフィクスチャを指定したテストと、それを指定するフィクスチャを指定したテストです。関数が最初の引数で指定したフィクスチャが、その依存関係になります。
+
+- 定義から参照できるのは、拡張元の `test` のフィクスチャと、同じ呼び出しで宣言したフィクスチャです。順序は問いません。後の `extend` で宣言したフィクスチャは参照できません。
+- フィクスチャを必要としない定義は `({}, use)` と書きます。ESLint の `no-empty-pattern` は、`allowObjectPatternsAsParameters: true` を設定するとこの書き方を許可します。
+- `[fn, { auto: true }]` は、指定の有無にかかわらず、その `test` のすべてのテストでフィクスチャをセットアップします。テストに必要で、テストが読み取らないフィクスチャに使います。
 
 各試行では、次の順に動作します。
 
-1. テストの登録に使った `extend` チェーンの各定義を、エンジンのフィクスチャの後に宣言順で実行し、それぞれ `use` の呼び出しまで進めます。テストがそのフィクスチャを指定しなくても実行します。ページを開いたりアプリの状態を変えたりするフィクスチャは、その `test` のすべてのテストで同じ操作を行います。そのため、準備内容が異なるテストは別々の `extend` チェーンから登録します。準備時間はテストの `timeout` に含まれます。失敗は、どの `beforeEach` フックよりも前に、フェーズ `beforeEach` として報告します。
-2. 同じフィクスチャオブジェクトで `beforeEach` フック、テスト本体、`afterEach` フックを順に実行します。フィクスチャ群はそのテスト自身のチェーンで決まります。たとえば `base` から登録したテストを囲むフックが `workspace` を読もうとすると、`UNSUPPORTED_CAPABILITY` で失敗します。
-3. 最後の `afterEach` の後、テスト本体の成功・失敗にかかわらず、逆順に後処理を実行します。それぞれに独立した `cleanupTimeout` があります。後処理のエラーは、それまで成功していた試行をフェーズ `afterEach` で失敗させます。本体が失敗済みなら `secondaryErrors` に加えます。
+1. セットアップするフィクスチャは、何かを実行する前に決まります。テスト本体と、適用されるすべての `beforeEach`・`afterEach` フックが指定したもの、それらのフィクスチャが指定したもの、`auto` のものです。どこからも指定されないフィクスチャは実行しません。
+2. 宣言順に、それぞれが指定するフィクスチャの後で実行し、`use` の呼び出しまで進めます。準備時間はテストの `timeout` に含まれます。失敗は、どの `beforeEach` フックよりも前に、フェーズ `beforeEach` として報告します。
+3. 同じフィクスチャオブジェクトで `beforeEach` フック、テスト本体、`afterEach` フックを順に実行します。フィクスチャ群はそのテスト自身のチェーンで決まります。たとえば `base` から登録したテストを囲むフックが `workspace` を指定すると、`COLLECTION_ERROR` で失敗します。
+4. 最後の `afterEach` の後、テスト本体の成功・失敗にかかわらず、逆順に後処理を実行します。それぞれに独立した `cleanupTimeout` があります。後処理のエラーは、それまで成功していた試行をフェーズ `afterEach` で失敗させます。本体が失敗済みなら `secondaryErrors` に加えます。
+
+収集時に失敗する誤りは、コードのファイルと行を示す 1 件の実行エラーになり、テストはひとつも実行されません。あるターゲットで実行しないテストは、そのターゲットのフィクスチャと照合しません。
 
 | 誤り | 失敗のタイミングと内容 |
 | --- | --- |
-| 関数を値に持つプレーンオブジェクトではない定義、空の名前、コアの名前（`agent`、`app`、`screen`、`platform`、`session`）、またはチェーン内の前の `extend` で定義済みの名前 | インポート時に、フィクスチャ名を示す `COLLECTION_ERROR` |
-| ターゲットのエンジンが提供する名前（Playwright ターゲットの `browser`） | 試行の `beforeEach` で `TEST_SETUP_FAILED` |
+| 関数または `[fn, { scope, auto }]` の組を値に持つプレーンオブジェクトではない定義、`'test'` と `'worker'` 以外のスコープ、真偽値ではない `auto`、`scope` と `auto` 以外のオプション、空の名前、コアの名前（`agent`、`app`、`screen`、`platform`、`session`）、またはチェーン内の前の `extend` で定義済みの名前 | インポート時に、フィクスチャ名を示す `COLLECTION_ERROR` |
+| 最初の引数を分割代入しない関数、またはそこで残余プロパティや計算プロパティを受け取る関数 | インポート時に、フィクスチャ名を示す `COLLECTION_ERROR` |
+| 互いを循環して指定するフィクスチャ | インポート時に、循環を示す `COLLECTION_ERROR` |
+| ターゲットにないフィクスチャ名を、そのターゲットで実行するテスト、そのフック、またはそれらが必要とするフィクスチャが指定した場合 | 収集時に `COLLECTION_ERROR` |
+| ターゲットのエンジンが提供するフィクスチャと同じ名前（Playwright ターゲットの `browser`）が、そのターゲットで実行するテストのチェーンにある場合 | 収集時に `COLLECTION_ERROR` |
+| 後の `extend` で宣言したフィクスチャを指定するフィクスチャ | 収集時に `COLLECTION_ERROR` |
 | `use` を呼ばずに戻る定義 | 試行の `beforeEach` で `TEST_SETUP_FAILED` |
 | `use` を 2 回呼ぶ定義 | 試行の後処理で `TEST_SETUP_FAILED` |
-| `use` の前に例外をスローする定義 | 試行の `beforeEach` で、そのエラー |
+| `use` の前に例外をスローする定義 | 試行の `beforeEach` で、そのエラー。そのフィクスチャを指定した `afterEach` フックはスキップします。 |
 | `use` の後に例外をスローする定義 | 試行の `afterEach` で、そのエラー |
 
 <Note>
@@ -605,20 +620,25 @@ export const test = base.extend<{}, { database: Database }>({
 });
 ```
 
-- Setup runs the first time a test or suite hook registered through its
-  `test` runs, inside that test's or hook's timeout. A failed setup fails
-  that test or hook, and the next one sets the fixture up again.
+- Setup runs the first time a test or suite hook names it, or names a
+  fixture that names it, inside that test's or hook's timeout. A failed setup
+  fails that test or hook, and the next one sets the fixture up again.
+- `[fn, { scope: 'worker', auto: true }]` sets it up for the first test or
+  suite hook registered through its `test`, named or not.
 - Teardown runs when the worker ends, before the engine is disposed, last set
   up first. Each teardown has `cleanupTimeout`. One that throws is a run error
   in phase `cleanup`.
-- It sees worker fixtures only: `platform`, the worker fixtures declared
-  before it, and on a mobile target `device`, `app`, and `screen`.
+- It sees worker fixtures only: `platform`, the worker fixtures of the `test`
+  it extends and the ones declared beside it, and on a mobile target `device`,
+  `app`, and `screen`. Naming a test fixture is `COLLECTION_ERROR`.
 - On a mobile target its `device`, `app`, and `screen` act in the test or
   hook that is running when it calls them. Its teardown can still drive the
-  device.
+  device: it runs in a short engine attempt when the fixture names one of
+  them, and without one when it names none.
 - A worker keeps one instance per definition. A test file is imported again
-  after a failed test, so a worker fixture the file declares gets a new
-  instance each time, and the old one stays set up until the worker ends.
+  after a failed test and for each serial group and setup test, so a worker
+  fixture the file declares gets a new instance each time, and the old one
+  stays set up until the worker ends.
   Declare worker fixtures in a module the file imports.
 - `extend({ ... })` without type arguments infers test fixtures only.
 
@@ -695,9 +715,12 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
   extend<Extra = {}, ExtraWorker = {}>(): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
   /**
    * Returns a new `test` whose registrations carry these fixture
-   * definitions on top of the ones it already had. Each attempt sets them up
-   * in declaration order after the engine's fixtures, runs the hooks and the
-   * body with them, and tears them down in reverse order after `afterEach`:
+   * definitions on top of the ones it already had. Each attempt sets up the
+   * ones its body and its `beforeEach` and `afterEach` hooks name, and the
+   * ones those fixtures name, in declaration order with each after the
+   * fixtures it names; it runs the hooks and the body with them, and tears
+   * them down in reverse order after `afterEach`. A fixture nothing names is
+   * not set up:
    *
    *   export const test = base.extend<{ workspace: Workspace }>({
    *     workspace: async ({ browser }, use) => {
@@ -709,7 +732,7 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *
    * A worker fixture (the second type argument, `[fn, { scope: 'worker' }]`)
    * is set up once per worker and target, the first time a test or suite
-   * hook of the chain needs it, and torn down when the worker ends:
+   * hook of the chain names it, and torn down when the worker ends:
    *
    *   export const test = base.extend<{}, { database: Database }>({
    *     database: [async ({}, use) => {
@@ -718,6 +741,11 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *       await database.stop();
    *     }, { scope: 'worker' }],
    *   });
+   *
+   * `auto: true` sets a fixture up whether or not anything names it: for
+   * every test (`[fn, { auto: true }]`), or once per worker
+   * (`[fn, { scope: 'worker', auto: true }]`). A suite hook sets up the auto
+   * worker fixtures of its chain, never a test fixture.
    */
   extend<Extra = {}, ExtraWorker = {}>(
     fixtures: FixtureDefinitions<Fixtures & Worker, Extra, Worker, ExtraWorker>,
@@ -834,10 +862,10 @@ export interface SetupFixtures extends TestFixtures {
 
 /**
  * How long one fixture instance lives. `test`, the default, is one instance
- * per test attempt, shared by its `beforeEach` hooks, its body, and its
- * `afterEach` hooks. `worker` is one instance per worker and target, set up
- * the first time a test or suite hook needs it and torn down when the worker
- * ends.
+ * per test attempt that names it, shared by its `beforeEach` hooks, its
+ * body, and its `afterEach` hooks. `worker` is one instance per worker and
+ * target, set up the first time a test or suite hook names it and torn down
+ * when the worker ends.
  */
 export type FixtureScope = 'test' | 'worker';
 
@@ -862,44 +890,67 @@ export type SuiteFixtures = WorkerFixtures;
 ```ts
 /**
  * Defines one fixture: everything before `await use(value)` is its setup,
- * everything after is its teardown. The body, its hooks, and later fixtures
- * run while `use` is pending; it resolves once they are done, whether or not
- * the body failed.
+ * everything after is its teardown. The fixtures it destructures in its
+ * first parameter are the ones it depends on, set up before it; one that
+ * needs none writes `async ({}, use) => {}`. The body, its hooks, and the
+ * fixtures that name it run while `use` is pending; it resolves once they
+ * are done, whether or not the body failed.
  */
 export type FixtureFn<Fixtures, Value> = (
   fixtures: Fixtures,
   use: (value: Value) => Promise<void>,
 ) => Promise<void>;
 
-/** A test fixture: its function, or the function and `{ scope: 'test' }`. */
+/**
+ * A test fixture: its function, or the function and its options. With
+ * `auto: true` it is set up for every test of its chain, whether or not
+ * anything names it.
+ */
 export type TestFixtureDefinition<Fixtures, Value> =
   | FixtureFn<Fixtures, Value>
-  | readonly [FixtureFn<Fixtures, Value>, { readonly scope?: 'test' }];
-/** A worker fixture: its function and `{ scope: 'worker' }`. It sees worker fixtures only. */
-export type WorkerFixtureDefinition<Worker, Value> = readonly [FixtureFn<Worker, Value>, { readonly scope: 'worker' }];
+  | readonly [FixtureFn<Fixtures, Value>, { readonly scope?: 'test'; readonly auto?: boolean }];
+/**
+ * A worker fixture: its function and `{ scope: 'worker' }`. It sees worker
+ * fixtures only. With `auto: true` it is set up once per worker, before the
+ * first test or suite hook of its chain, whether or not anything names it.
+ */
+export type WorkerFixtureDefinition<Worker, Value> = readonly [
+  FixtureFn<Worker, Value>,
+  { readonly scope: 'worker'; readonly auto?: boolean },
+];
 /**
  * One definition per fixture `test.extend()` adds: `Extra` holds the test
  * fixtures, `ExtraWorker` the worker fixtures. A definition sees the fixtures
- * of the `test` it extends, not its siblings: a fixture that needs another
- * one goes in a chained `extend()`. A test fixture sees `Base`, every fixture
- * a test sees; a worker fixture sees `Worker` only, since it outlives every
- * test fixture. A name the base already has is a type error (and a
+ * of the `test` it extends and the ones declared beside it, in any order: it
+ * is set up after the ones it names. A test fixture sees every fixture a
+ * test sees; a worker fixture sees worker fixtures only, since it outlives
+ * every test fixture. A name the base already has is a type error (and a
  * `COLLECTION_ERROR` at runtime).
  */
 export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
-  readonly [K in keyof Extra]: K extends keyof Base ? never : TestFixtureDefinition<Base, Extra[K]>;
+  readonly [K in keyof Extra]: K extends keyof Base
+    ? never
+    : TestFixtureDefinition<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Extra[K]>;
 } & {
   // Not inferred: an `extend({ ... })` without type arguments infers its test
   // fixtures from the definitions, as before worker fixtures; a worker
   // fixture is declared through the second type argument.
-  readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra ? never : WorkerFixtureDefinition<Worker, NoInfer<ExtraWorker>[K]>;
+  readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra
+    ? never
+    : WorkerFixtureDefinition<Worker & NoInfer<ExtraWorker>, NoInfer<ExtraWorker>[K]>;
 };
 ```
 
 ### 関数の型
 
 ```ts
-/** A test body. */
+/**
+ * A test body. It names the fixtures it uses by destructuring its first
+ * parameter (`async ({ app, screen }) => {}`), and the runner sets up only
+ * those; a body that takes the whole object (`async (fixtures) => {}`) or a
+ * rest property is a `COLLECTION_ERROR`. The same holds for a hook and for
+ * the first parameter of a `test.extend()` fixture.
+ */
 export type TestFn<Fixtures = TestFixtures> = (fixtures: Fixtures) => void | Promise<void>;
 
 /** A setup test body; `session.save` is the extra fixture. */

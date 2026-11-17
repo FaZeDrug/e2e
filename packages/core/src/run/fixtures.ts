@@ -295,6 +295,25 @@ const FOREIGN_FIXTURE_HINTS: Readonly<Record<string, string>> = {
   driver: 'there is no WebDriver session: drive the device through app, screen, and (on an agent-device target) device',
 };
 
+/** What an unknown-fixture message reads of a target: its name, and its engine's name and fixtures. */
+interface FixtureOwner {
+  readonly name: string;
+  readonly engine?: { readonly name: string; readonly fixtures?: Readonly<Record<string, unknown>> | undefined } | undefined;
+}
+
+/**
+ * Why `target` has no fixture called `property`: the fixtures it does have
+ * (`available`), what its engine contributes, and either the nearest name or,
+ * for a fixture another runner hands out, the e2e way of doing the same thing.
+ */
+export function unknownFixtureMessage(target: FixtureOwner, property: string, available: readonly string[]): string {
+  const declared = Object.keys(target.engine?.fixtures ?? {});
+  const contributed = `engine ${target.engine?.name ?? 'none'} contributes ${declared.length === 0 ? 'no fixtures' : declared.join(', ')}`;
+  const foreign = FOREIGN_FIXTURE_HINTS[property];
+  const hint = foreign === undefined ? didYouMean(property, available) : `; ${foreign}`;
+  return `target "${target.name}" has no "${property}" fixture; available: ${available.join(', ')} (${contributed})${hint}`;
+}
+
 /**
  * Reaching for a fixture the target's engine does not contribute fails at
  * the first touch with the earliest honest error: the engine's name and what
@@ -306,15 +325,9 @@ function gateUnknownFixtures<T extends object>(fixtures: T, environment: Attempt
       if (typeof property !== 'string' || property in target || PROBED_KEYS.has(property)) {
         return Reflect.get(target, property, receiver) as unknown;
       }
-      const engine = environment.target.engine;
-      const declared = Object.keys(engine?.fixtures ?? {});
-      const available = Object.keys(target).toSorted();
-      const contributed = `engine ${engine?.name ?? 'none'} contributes ${declared.length === 0 ? 'no fixtures' : declared.join(', ')}`;
-      const foreign = FOREIGN_FIXTURE_HINTS[property];
-      const hint = foreign === undefined ? didYouMean(property, available) : `; ${foreign}`;
       throw new ConfigurationError(
         'UNSUPPORTED_CAPABILITY',
-        `target "${environment.target.name}" has no "${property}" fixture; available: ${available.join(', ')} (${contributed})${hint}`,
+        unknownFixtureMessage(environment.target, property, Object.keys(target).toSorted()),
       );
     },
   });

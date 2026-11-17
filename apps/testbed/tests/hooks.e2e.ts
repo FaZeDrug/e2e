@@ -1,5 +1,5 @@
 import { expect } from 'e2e';
-import { test, type Account } from './worker-account.ts';
+import { test, todosTest, unnamedSetupCount, type Account } from './worker-account.ts';
 
 test.describe('hooks with a worker fixture', { tags: ['hooks'] }, () => {
   // Each test checks only what it can see itself, since a filter or a retry can run either one alone.
@@ -62,5 +62,18 @@ test.describe('hooks in a serial group', { serial: true, tags: ['hooks'] }, () =
 
   test('step 2: sees it on the same page', async ({ screen }) => {
     await expect(screen.getByTestId('todo')).toContainText(['Serial todo']);
+  });
+});
+
+todosTest.describe('fixtures on demand', { tags: ['hooks'] }, () => {
+  todosTest('an auto fixture runs for a test that names nothing', async ({ screen }) => {
+    await expect(screen.getByLabel('New todo')).toBeVisible();
+  });
+
+  todosTest('a fixture no test names is never set up', async ({ screen, account }) => {
+    await screen.getByLabel('New todo').fill(`Todo for ${account.name}`);
+    await screen.getByLabel('New todo').press('Enter');
+    await expect(screen.getByTestId('todo')).toHaveCount(1);
+    expect(unnamedSetupCount()).toBe(0);
   });
 });

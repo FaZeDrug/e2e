@@ -722,10 +722,10 @@ export interface SetupFixtures extends TestFixtures {
 
 /**
  * How long one fixture instance lives. `test`, the default, is one instance
- * per test attempt, shared by its `beforeEach` hooks, its body, and its
- * `afterEach` hooks. `worker` is one instance per worker and target, set up
- * the first time a test or suite hook needs it and torn down when the worker
- * ends.
+ * per test attempt that names it, shared by its `beforeEach` hooks, its
+ * body, and its `afterEach` hooks. `worker` is one instance per worker and
+ * target, set up the first time a test or suite hook names it and torn down
+ * when the worker ends.
  */
 export type FixtureScope = 'test' | 'worker';
 
@@ -805,7 +805,13 @@ export interface SetupOptions extends Omit<TestOptions, 'session' | 'only' | 'sk
   agent?: string;
 }
 
-/** A test body. */
+/**
+ * A test body. It names the fixtures it uses by destructuring its first
+ * parameter (`async ({ app, screen }) => {}`), and the runner sets up only
+ * those; a body that takes the whole object (`async (fixtures) => {}`) or a
+ * rest property is a `COLLECTION_ERROR`. The same holds for a hook and for
+ * the first parameter of a `test.extend()` fixture.
+ */
 export type TestFn<Fixtures = TestFixtures> = (fixtures: Fixtures) => void | Promise<void>;
 /** A setup test body; `session.save` is the extra fixture. */
 export type SetupFn<Fixtures = TestFixtures> = (
@@ -817,36 +823,53 @@ export type TestHookFn<Fixtures = TestFixtures> = (fixtures: Fixtures) => void |
 export type SuiteHookFn = TestHookFn<WorkerFixtures>;
 /**
  * Defines one fixture: everything before `await use(value)` is its setup,
- * everything after is its teardown. The body, its hooks, and later fixtures
- * run while `use` is pending; it resolves once they are done, whether or not
- * the body failed.
+ * everything after is its teardown. The fixtures it destructures in its
+ * first parameter are the ones it depends on, set up before it; one that
+ * needs none writes `async ({}, use) => {}`. The body, its hooks, and the
+ * fixtures that name it run while `use` is pending; it resolves once they
+ * are done, whether or not the body failed.
  */
 export type FixtureFn<Fixtures, Value> = (
   fixtures: Fixtures,
   use: (value: Value) => Promise<void>,
 ) => Promise<void>;
-/** A test fixture: its function, or the function and `{ scope: 'test' }`. */
+/**
+ * A test fixture: its function, or the function and its options. With
+ * `auto: true` it is set up for every test of its chain, whether or not
+ * anything names it.
+ */
 export type TestFixtureDefinition<Fixtures, Value> =
   | FixtureFn<Fixtures, Value>
-  | readonly [FixtureFn<Fixtures, Value>, { readonly scope?: 'test' }];
-/** A worker fixture: its function and `{ scope: 'worker' }`. It sees worker fixtures only. */
-export type WorkerFixtureDefinition<Worker, Value> = readonly [FixtureFn<Worker, Value>, { readonly scope: 'worker' }];
+  | readonly [FixtureFn<Fixtures, Value>, { readonly scope?: 'test'; readonly auto?: boolean }];
+/**
+ * A worker fixture: its function and `{ scope: 'worker' }`. It sees worker
+ * fixtures only. With `auto: true` it is set up once per worker, before the
+ * first test or suite hook of its chain, whether or not anything names it.
+ */
+export type WorkerFixtureDefinition<Worker, Value> = readonly [
+  FixtureFn<Worker, Value>,
+  { readonly scope: 'worker'; readonly auto?: boolean },
+];
 /**
  * One definition per fixture `test.extend()` adds: `Extra` holds the test
  * fixtures, `ExtraWorker` the worker fixtures. A definition sees the fixtures
- * of the `test` it extends, not its siblings: a fixture that needs another
- * one goes in a chained `extend()`. A test fixture sees `Base`, every fixture
- * a test sees; a worker fixture sees `Worker` only, since it outlives every
- * test fixture. A name the base already has is a type error (and a
+ * of the `test` it extends and the ones declared beside it, in any order: it
+ * is set up after the ones it names. A test fixture sees every fixture a
+ * test sees; a worker fixture sees worker fixtures only, since it outlives
+ * every test fixture. A name the base already has is a type error (and a
  * `COLLECTION_ERROR` at runtime).
  */
 export type FixtureDefinitions<Base, Extra, Worker = {}, ExtraWorker = {}> = {
-  readonly [K in keyof Extra]: K extends keyof Base ? never : TestFixtureDefinition<Base, Extra[K]>;
+  readonly [K in keyof Extra]: K extends keyof Base
+    ? never
+    : TestFixtureDefinition<Base & NoInfer<Extra> & NoInfer<ExtraWorker>, Extra[K]>;
 } & {
   // Not inferred: an `extend({ ... })` without type arguments infers its test
   // fixtures from the definitions, as before worker fixtures; a worker
   // fixture is declared through the second type argument.
-  readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra ? never : WorkerFixtureDefinition<Worker, NoInfer<ExtraWorker>[K]>;
+  readonly [K in keyof NoInfer<ExtraWorker>]: K extends keyof Base | keyof Extra
+    ? never
+    : WorkerFixtureDefinition<Worker & NoInfer<ExtraWorker>, NoInfer<ExtraWorker>[K]>;
 };
 /** A `describe` body. An async body is a type error. */
 export type SynchronousBody<Result> = Extract<Result, PromiseLike<unknown>> extends never
@@ -936,9 +959,12 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
   extend<Extra = {}, ExtraWorker = {}>(): TestAPI<Fixtures & Extra, Worker & ExtraWorker>;
   /**
    * Returns a new `test` whose registrations carry these fixture
-   * definitions on top of the ones it already had. Each attempt sets them up
-   * in declaration order after the engine's fixtures, runs the hooks and the
-   * body with them, and tears them down in reverse order after `afterEach`:
+   * definitions on top of the ones it already had. Each attempt sets up the
+   * ones its body and its `beforeEach` and `afterEach` hooks name, and the
+   * ones those fixtures name, in declaration order with each after the
+   * fixtures it names; it runs the hooks and the body with them, and tears
+   * them down in reverse order after `afterEach`. A fixture nothing names is
+   * not set up:
    *
    *   export const test = base.extend<{ workspace: Workspace }>({
    *     workspace: async ({ browser }, use) => {
@@ -950,7 +976,7 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *
    * A worker fixture (the second type argument, `[fn, { scope: 'worker' }]`)
    * is set up once per worker and target, the first time a test or suite
-   * hook of the chain needs it, and torn down when the worker ends:
+   * hook of the chain names it, and torn down when the worker ends:
    *
    *   export const test = base.extend<{}, { database: Database }>({
    *     database: [async ({}, use) => {
@@ -959,6 +985,11 @@ export interface TestAPI<Fixtures = TestFixtures, Worker = WorkerFixtures> exten
    *       await database.stop();
    *     }, { scope: 'worker' }],
    *   });
+   *
+   * `auto: true` sets a fixture up whether or not anything names it: for
+   * every test (`[fn, { auto: true }]`), or once per worker
+   * (`[fn, { scope: 'worker', auto: true }]`). A suite hook sets up the auto
+   * worker fixtures of its chain, never a test fixture.
    */
   extend<Extra = {}, ExtraWorker = {}>(
     fixtures: FixtureDefinitions<Fixtures & Worker, Extra, Worker, ExtraWorker>,

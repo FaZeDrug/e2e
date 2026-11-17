@@ -4,51 +4,20 @@
  * the `test.extend()` chain it was registered through. Each has a scope, and
  * code sees the fixtures that live at least as long as it does: a test and
  * its per-test hooks see test and worker fixtures, a suite hook and a worker
- * fixture see worker fixtures only.
+ * fixture see worker fixtures only. A chain fixture is set up on demand: for
+ * code that names it, for a fixture that names it, or because it is `auto`
+ * (`planAttempt`, `planSuiteHook`).
  */
 
+import { fixtureNames, type FixtureUserFn } from '../collect/fixture-names.ts';
+import { builtInNames, builtInScope, type FixturePlan, type FixtureTarget } from '../collect/fixture-plan.ts';
 import type { FixtureDefinition } from '../collect/registry.ts';
-import type { EngineIsolation } from '@e2e-dev/core/lib/engine/index';
 import { pollLineage, type PollLineage } from '@e2e-dev/core/lib/expect/poll-scope';
 import { ConfigurationError } from '@e2e-dev/core/lib/internal/errors';
 import { didYouMean } from '@e2e-dev/core/lib/internal/suggest';
-import type { FixtureScope } from '@e2e-dev/core/lib/types';
-
-/** What the pool reads of a target: its name, its platform, and its engine's fixtures and isolation. */
-export interface FixtureTarget {
-  readonly name: string;
-  readonly platform: string;
-  readonly engine?:
-    | {
-        readonly name: string;
-        readonly isolation?: EngineIsolation | undefined;
-        readonly fixtures?: Readonly<Record<string, unknown>> | undefined;
-      }
-    | undefined;
-}
-
-/** Built-in fixtures every target has, beside the ones its engine contributes. */
-const CORE_FIXTURES = ['agent', 'app', 'screen', 'platform', 'session'] as const;
 
 /** Keys a test body may probe without meaning a fixture. */
 const PROBED_KEYS: ReadonlySet<string> = new Set(['then', 'constructor', 'toJSON', 'toString', 'valueOf', 'inspect']);
-
-/**
- * The scope of a built-in fixture on `target`. `platform` never changes and
- * `agent` and `session` belong to one attempt everywhere; the engine's
- * fixtures, `app`, and `screen` live as long as the state behind them, which
- * the engine declares (`isolation`).
- */
-function builtInScope(target: FixtureTarget, name: string): FixtureScope {
-  if (name === 'platform') return 'worker';
-  if (name === 'agent' || name === 'session') return 'test';
-  return target.engine?.isolation === 'worker' ? 'worker' : 'test';
-}
-
-/** Every built-in fixture name on `target`: the core ones, then the engine's. */
-function builtInNames(target: FixtureTarget): readonly string[] {
-  return [...CORE_FIXTURES, ...Object.keys(target.engine?.fixtures ?? {})];
-}
 
 /**
  * The built-in fixtures of code with no attempt behind it: `platform` alone.
@@ -75,6 +44,12 @@ export function attemptlessBuiltIns(target: FixtureTarget, unavailable?: (name: 
 export interface FixtureTeardown {
   readonly name: string;
   run(): Promise<void>;
+}
+
+/** A worker fixture's teardown, which runs when the worker ends, outside any test. */
+export interface WorkerFixtureTeardown extends FixtureTeardown {
+  /** Whether the fixture names an engine-backed built-in, itself or through a fixture it names: its teardown then needs an attempt. */
+  readonly usesEngine: boolean;
 }
 
 /**
@@ -170,7 +145,7 @@ function startFixture(
  */
 export class WorkerFixturePool {
   private readonly instances = new Map<FixtureDefinition, Promise<unknown>>();
-  private readonly active: FixtureTeardown[] = [];
+  private readonly active: WorkerFixtureTeardown[] = [];
   private closed = false;
   /** The built-in fixtures of the attempt or suite hook running now; see `enter`. */
   private current: object | undefined;
@@ -194,18 +169,19 @@ export class WorkerFixturePool {
 
   /**
    * The value of `definition`, set up on first use with `fixtures`, the
-   * worker fixtures its chain declares before it. A setup that fails is
-   * forgotten, so the next test to need the fixture tries again; one still
-   * running is shared by everyone who asks meanwhile.
+   * worker fixtures it names. A setup that fails is forgotten, so the next
+   * test to need the fixture tries again; one still running is shared by
+   * everyone who asks meanwhile. `usesEngine` is the plan's word on whether
+   * the fixture reaches the engine, kept for its teardown.
    */
-  acquire(definition: FixtureDefinition, fixtures: object): Promise<unknown> {
+  acquire(definition: FixtureDefinition, fixtures: object, usesEngine: boolean): Promise<unknown> {
     const known = this.instances.get(definition);
     if (known !== undefined) return known;
     let value: unknown;
     const instance = startFixture(definition, fixtures, (provided, teardown) => {
       if (this.closed) return false;
       value = provided;
-      this.active.push(teardown);
+      this.active.push({ ...teardown, usesEngine });
       return true;
     }).then(() => value);
     this.instances.set(definition, instance);
@@ -220,7 +196,7 @@ export class WorkerFixturePool {
    * set up first. A setup still running when the pool closes finds nobody to
    * hand its value to, and its teardown runs detached.
    */
-  close(): readonly FixtureTeardown[] {
+  close(): readonly WorkerFixtureTeardown[] {
     this.closed = true;
     this.instances.clear();
     return this.active.splice(0).toReversed();
@@ -271,13 +247,18 @@ export interface BoundFixtures {
   /** The object the hooks and the body receive. */
   readonly fixtures: object;
   /**
-   * Sets up the chain in declaration order: a worker fixture is taken from
-   * the pool (set up there on first use), a test fixture set up for this
-   * attempt. Each value is defined on `fixtures` before the next definition,
-   * the hooks, or the body can read it. Rejects with the first failure; the
-   * test fixtures set up before it still get torn down.
+   * Sets up the fixtures the plan lists, in its order: a worker fixture is
+   * taken from the pool (set up there on first use), a test fixture set up
+   * for this attempt. Each value is defined on `fixtures` before the next
+   * fixture, the hooks, or the body can read it. Rejects with the first
+   * failure; the test fixtures set up before it still get torn down.
    */
   setUp(): Promise<void>;
+  /**
+   * Whether every chain fixture `fn` names was set up. A hook that names one
+   * whose setup failed, or was never reached, has nothing to run with.
+   */
+  ready(fn: FixtureUserFn): boolean;
   /**
    * The teardowns of the test fixtures whose setup completed, last set up
    * first. Taking them ends setup, as does `signal`: a test fixture still
@@ -289,11 +270,8 @@ export interface BoundFixtures {
 }
 
 export interface BindOptions {
-  readonly target: FixtureTarget;
-  /** The `test.extend()` chain the code was registered through. */
-  readonly chain: readonly FixtureDefinition[];
-  /** `test` for an attempt (its hooks and body), `worker` for a suite hook. */
-  readonly scope: FixtureScope;
+  /** What to set up, for which code, on which target: `planAttempt` or `planSuiteHook`. */
+  readonly plan: FixturePlan;
   /** The attempt's built-in fixtures, which the result reads lazily; see `attemptlessBuiltIns`. */
   readonly builtIns: object;
   readonly pool: WorkerFixturePool;
@@ -302,25 +280,25 @@ export interface BindOptions {
 }
 
 /**
- * Binds one chain to the code about to run with it: a test attempt, or a
+ * Binds one plan to the code about to run with it: a test attempt, or a
  * suite hook. The result reads the built-ins the scope admits lazily, and
- * holds the chain's fixtures as they are set up. A fixture the scope does
- * not admit, or one whose setup failed, fails at the first read with what
- * went wrong instead of looking unknown.
+ * holds the planned fixtures as they are set up. A fixture the scope does
+ * not admit, one whose setup failed, or one nothing named fails at the first
+ * read with what went wrong instead of looking unknown.
  */
 export function bindFixtures(options: BindOptions): BoundFixtures {
-  const { target, chain, scope, builtIns, pool, signal } = options;
+  const { plan, builtIns, pool, signal } = options;
+  const { target, scope } = plan;
   const values: Record<string, unknown> = {};
-  const fixtures = gate(values, options);
-  const builtInSet = new Set(builtInNames(target));
-  for (const name of builtInSet) {
+  const fixtures = gate(values, plan, builtIns);
+  for (const name of builtInNames(target)) {
     if (scope === 'worker' && builtInScope(target, name) === 'test') continue;
     Object.defineProperty(values, name, { enumerable: true, get: () => Reflect.get(builtIns, name) as unknown });
   }
   // What a worker fixture sees: the built-in worker fixtures and the worker
-  // fixtures declared before it.
+  // fixtures it names, set up before it.
   const workerValues = pool.builtIns();
-  const workerFixtures = gate(workerValues, { ...options, scope: 'worker', builtIns: attemptlessBuiltIns(target) });
+  const workerFixtures = gate(workerValues, { ...plan, scope: 'worker' }, attemptlessBuiltIns(target));
 
   const active: FixtureTeardown[] = [];
   let abandoned = signal?.aborted === true;
@@ -338,16 +316,8 @@ export function bindFixtures(options: BindOptions): BoundFixtures {
 
   const setUpOne = async (definition: FixtureDefinition): Promise<void> => {
     const { name } = definition;
-    // A suite hook sets up none of the test fixtures its chain holds.
-    if (scope === 'worker' && definition.scope === 'test') return;
-    if (builtInSet.has(name)) {
-      throw new ConfigurationError(
-        'TEST_SETUP_FAILED',
-        `fixture "${name}" is contributed by engine ${target.engine?.name ?? 'none'}; test.extend() cannot redefine it`,
-      );
-    }
     if (definition.scope === 'worker') {
-      const value = await pool.acquire(definition, workerFixtures);
+      const value = await pool.acquire(definition, workerFixtures, plan.engineBacked.has(definition));
       Object.defineProperty(workerValues, name, { value, enumerable: true });
       define(name, value);
       return;
@@ -360,15 +330,17 @@ export function bindFixtures(options: BindOptions): BoundFixtures {
     });
   };
 
+  const declared = new Set(plan.chain.map((definition) => definition.name));
   return {
     fixtures,
     async setUp(): Promise<void> {
       requireActive();
-      for (const definition of chain) {
+      for (const definition of plan.order) {
         await setUpOne(definition);
         requireActive();
       }
     },
+    ready: (fn) => fixtureNames(fn, 'hook').every((name) => !declared.has(name) || Object.hasOwn(values, name)),
     teardowns(): readonly FixtureTeardown[] {
       abandon();
       signal?.removeEventListener('abort', abandon);
@@ -379,29 +351,32 @@ export function bindFixtures(options: BindOptions): BoundFixtures {
 
 /**
  * Wraps `values` so a read of a fixture they lack says why: a test fixture
- * read where only worker fixtures live, or a chain fixture whose setup
- * failed or has not run. Any other name goes to the built-ins, whose own
- * gate names the fixtures the target has.
+ * read where only worker fixtures live, a chain fixture whose setup failed,
+ * or one nothing named. Any other name goes to the built-ins, whose own gate
+ * names the fixtures the target has.
  */
-function gate(values: Record<string, unknown>, options: BindOptions): object {
-  const { target, chain, scope, builtIns } = options;
-  const declared = new Map(chain.map((definition) => [definition.name, definition.scope]));
+function gate(values: Record<string, unknown>, plan: FixturePlan, builtIns: object): object {
+  const { target, chain, scope } = plan;
+  const declared = new Map(chain.map((definition) => [definition.name, definition]));
   return new Proxy(values, {
     get(own, property, receiver) {
       if (typeof property !== 'string' || property in own || PROBED_KEYS.has(property)) {
         return Reflect.get(own, property, receiver) as unknown;
       }
-      const fixtureScope = declared.get(property) ?? (builtInNames(target).includes(property) ? builtInScope(target, property) : undefined);
+      const definition = declared.get(property);
+      const fixtureScope = definition?.scope ?? (builtInNames(target).includes(property) ? builtInScope(target, property) : undefined);
       if (scope === 'worker' && fixtureScope === 'test') {
         throw new ConfigurationError(
           'UNSUPPORTED_CAPABILITY',
           `"${property}" is a test fixture on target "${target.name}": beforeAll, afterAll, and worker fixtures see worker fixtures only, since a test fixture is set up for one test. Use it in beforeEach, or save the state it builds with test.setup()`,
         );
       }
-      if (declared.has(property)) {
+      if (definition !== undefined) {
         throw new ConfigurationError(
           'TEST_SETUP_FAILED',
-          `fixture "${property}" was not set up: its setup failed, or it is declared after the fixture reading it`,
+          plan.order.includes(definition)
+            ? `fixture "${property}" was not set up: its setup failed, or the setup of a fixture before it did`
+            : `fixture "${property}" was not set up: nothing running here names it. A fixture is set up for the code that names it in its first parameter, or for every test when it is declared with auto: true`,
         );
       }
       return Reflect.get(builtIns, property) as unknown;

@@ -25,3 +25,27 @@ export const test = base
       await use(`Todo for ${account.name}`);
     },
   });
+
+let unnamedSetups = 0;
+
+/** How many times `unnamed` was set up in this process: fixtures are set up on demand, so never. */
+export const unnamedSetupCount = (): number => unnamedSetups;
+
+/**
+ * `test` whose every test starts on the todos page, through `todosPage`, an
+ * `auto` fixture no test names, beside `unnamed`, which no test names either
+ * and so never runs.
+ */
+export const todosTest = test.extend<{ todosPage: void; unnamed: string }>({
+  todosPage: [
+    async ({ app }, use) => {
+      await app.open('/todos');
+      await use();
+    },
+    { auto: true },
+  ],
+  unnamed: async ({}, use) => {
+    unnamedSetups += 1;
+    await use('unnamed');
+  },
+});

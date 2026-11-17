@@ -742,25 +742,35 @@ withWorkspace('renames it', async ({ workspace, app }) => {
 withWorkspace.beforeEach(async ({ workspace }) => {
   workspace.id satisfies string;
 });
-// A fixture that needs another fixture goes in a chained extend.
+// A fixture names the fixtures it needs: the ones of the test it extends, and the ones declared beside it, in any order.
 withWorkspace.extend<{ member: string }>({
   member: async ({ workspace }, use) => {
     await use(workspace.id);
   },
 });
-test.extend<{ owner: string; member: string }>({
-  owner: async (_fixtures, use) => {
+test.extend<{ member: number; owner: string }, { tenant: string }>({
+  member: async ({ owner, tenant, app }, use) => {
+    void app;
+    await use(owner.length + tenant.length);
+  },
+  owner: async ({}, use) => {
     await use('owner');
   },
-  // @ts-expect-error a definition sees the fixtures of the test it extends, not its siblings
-  member: async ({ owner }, use) => {
-    await use(owner);
+  tenant: [async ({ platform }, use) => { await use(platform); }, { scope: 'worker' }],
+});
+test.extend<{ owner: string; member: string }>({
+  owner: async ({}, use) => {
+    await use('owner');
+  },
+  // @ts-expect-error a definition sees only the fixtures that exist: the base's and its siblings'
+  member: async ({ nobody }, use) => {
+    await use(String(nobody));
   },
 });
 // @ts-expect-error a core fixture cannot be redefined
-test.extend<{ agent: string }>({ agent: async (_fixtures, use) => { await use('x'); } });
+test.extend<{ agent: string }>({ agent: async ({}, use) => { await use('x'); } });
 // @ts-expect-error the value handed to use() has the declared fixture type
-test.extend<{ count: number }>({ count: async (_fixtures, use) => { await use('one'); } });
+test.extend<{ count: number }>({ count: async ({}, use) => { await use('one'); } });
 // The zero-argument form still types an engine's contributed fixtures without defining them.
 test.extend<{ device: unknown }>()('types a device', async ({ device }) => { device satisfies unknown; });
 
@@ -790,7 +800,7 @@ withDatabase.beforeAll(async ({ database, platform }) => {
 // @ts-expect-error a suite hook does not see a test fixture
 withDatabase.afterAll(({ workspace }) => void workspace);
 // @ts-expect-error a suite hook does not see the built-in test fixtures
-withDatabase.beforeAll((fixtures) => void fixtures.screen);
+withDatabase.beforeAll(({ screen: hookScreen }) => void hookScreen);
 withDatabase.beforeEach(async ({ database, workspace }) => {
   await database.seed();
   workspace.id satisfies string;
@@ -800,13 +810,28 @@ withWorkspace.extend<{}, { cache: string }>({
   cache: [async ({ workspace }, use) => { await use(workspace.id); }, { scope: 'worker' }],
 });
 // @ts-expect-error a worker fixture needs its scope
-withWorkspace.extend<{}, { cache: string }>({ cache: async (_fixtures, use) => { await use('c'); } });
+withWorkspace.extend<{}, { cache: string }>({ cache: async ({}, use) => { await use('c'); } });
+withWorkspace.extend<{}, { cache: string; region: string }>({
+  // A worker fixture sees the worker fixtures declared beside it.
+  cache: [async ({ region }, use) => { await use(region); }, { scope: 'worker' }],
+  region: [async ({}, use) => { await use('eu'); }, { scope: 'worker' }],
+});
 // Without type arguments the test fixtures are inferred from the definitions.
-test.extend({ count: async (_fixtures, use: (value: number) => Promise<void>) => { await use(1); } })('infers', async ({ count }) => {
+test.extend({ count: async ({}, use: (value: number) => Promise<void>) => { await use(1); } })('infers', async ({ count }) => {
   count satisfies number;
 });
 // A test fixture may say its scope too.
-test.extend<{ page: string }>({ page: [async (_fixtures, use) => { await use('p'); }, { scope: 'test' }] });
+test.extend<{ page: string }>({ page: [async ({}, use) => { await use('p'); }, { scope: 'test' }] });
+// auto: true sets a fixture up whether or not anything names it, in either scope.
+test.extend<{ watch: undefined }, { install: undefined }>({
+  watch: [async ({ app }, use) => { void app; await use(undefined); }, { auto: true }],
+  install: [async ({ platform }, use) => { void platform; await use(undefined); }, { scope: 'worker', auto: true }],
+});
+test.extend<{ watch: undefined }>({ watch: [async ({}, use) => { await use(undefined); }, { scope: 'test', auto: false }] });
+// @ts-expect-error auto is a boolean
+test.extend<{ watch: undefined }>({ watch: [async ({}, use) => { await use(undefined); }, { auto: 'yes' }] });
+// @ts-expect-error auto does not make a worker fixture: it still needs its scope
+test.extend<{}, { install: undefined }>({ install: [async ({}, use) => { await use(undefined); }, { auto: true }] });
 // A worker fixture of the engine's (a device) reaches the suite hooks through the second type argument.
 const deviceTest = test.extend<{}, { device: { reset(): Promise<void> } } & Pick<TestFixtures, 'app' | 'screen'>>();
 deviceTest.beforeAll(async ({ device, app, screen: deviceScreen }) => {
@@ -953,7 +978,7 @@ void (expect.soft(JSON.parse('{}')).toMatchSchema(userSchema) satisfies { id: nu
 
 // describe and the hooks are top-level imports too, typed as their test.* forms.
 describe('group', { tags: ['smoke'] }, () => {
-  beforeEach(async (fixtures) => void fixtures.screen);
+  beforeEach(async ({ screen: hookScreen }) => void hookScreen);
   afterEach(async ({ app }) => void app);
   beforeAll(({ platform }) => void platform);
   afterAll(({ platform }) => void platform);

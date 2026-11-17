@@ -350,7 +350,7 @@ export default {
 - `app.bundleId`: bundle id, package name, or display name `app.open()`
   launches fresh (an attempt launches nothing itself; without it, the
   installed build). `app.appPath`: the `.app` or `.apk` under test; the
-  engine installs nothing, so a worker fixture every test takes calls
+  engine installs nothing, so a worker fixture with `auto: true` calls
   `device.installApp()` once per device (no path installs `app.appPath`).
   `app.launchArguments` and `app.permissions` ride every fresh launch:
   arguments reach the app process (iOS) or `am start` (Android), permissions

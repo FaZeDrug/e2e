@@ -29,6 +29,7 @@ import { withAbort, withTimeout } from '@e2e-dev/core/lib/internal/time';
 import type { AttemptBudget } from '@e2e-dev/core/lib/run/budget';
 import type { TargetExecutor } from './execute.ts';
 import { classifyAttemptStatus } from '@e2e-dev/core/lib/run/engine-sessions';
+import { planAttempt } from '../collect/fixture-plan.ts';
 import { bindFixtures, type BoundFixtures } from './fixture-pool.ts';
 import { captureFailureEvidence } from './failure-evidence.ts';
 import type { ArtifactSink, AttemptFixtures } from '@e2e-dev/core/lib/run/fixtures';
@@ -296,9 +297,7 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
       // Whatever happens below, the slot is free for the next test once the body is done.
       try {
         const attemptFixtures = bindFixtures({
-          target: env.target,
-          chain: registered.fixtures,
-          scope: 'test',
+          plan: planAttempt(env.target, registered, [...executor.realms.hooksFor(realm, registered, 'beforeEach'), ...executor.realms.hooksFor(realm, registered, 'afterEach')]),
           builtIns: env.fixtures,
           pool: executor.workerFixtures,
           signal: budget.signal,
@@ -444,7 +443,7 @@ export function createStandaloneTestRun(env: StandaloneTestEnvironment, test: St
       attemptFixtures === undefined
         ? []
         : [
-            ...executor.realms.hooksFor(realm, registered, 'afterEach').map((hook) => ({ label: `${hook.kind} hook`, run: () => hook.fn(attemptFixtures.fixtures) })),
+            ...executor.realms.hooksFor(realm, registered, 'afterEach').filter((hook) => attemptFixtures.ready(hook.fn)).map((hook) => ({ label: `${hook.kind} hook`, run: () => hook.fn(attemptFixtures.fixtures) })),
             ...attemptFixtures.teardowns().map((teardown) => ({ label: `fixture "${teardown.name}" teardown`, run: teardown.run })),
           ];
     return { started: { realm, teardowns }, outcome };

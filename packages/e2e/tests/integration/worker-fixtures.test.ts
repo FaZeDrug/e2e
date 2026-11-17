@@ -58,14 +58,6 @@ test.describe('suite', () => {
   });
   test('after the failure', ({ database }) => log('body:after:' + database.id));
 });
-
-test.describe('reaches for a test fixture', () => {
-  test.beforeAll((fixtures) => {
-    log('beforeAll:gadget');
-    void fixtures.gadget;
-  });
-  test('skipped by its hook', () => log('unreachable'));
-});
 `;
       const log = hookLog('worker-fixtures');
       const { outcome, project } = await runProject(
@@ -77,34 +69,20 @@ test.describe('reaches for a test fixture', () => {
         expect(resultByTitle(outcome, 'first').status).toBe('passed');
         expect(resultByTitle(outcome, 'fails').status).toBe('failed');
         expect(resultByTitle(outcome, 'after the failure').status).toBe('passed');
-        const skipped = resultByTitle(outcome, 'skipped by its hook');
-        expect(skipped.status).toBe('skipped');
-        expect(skipped.skip?.cause).toBe('hook-failed');
-        const hookErrors = outcome.report.run.errors.map(({ code, phase, message }) => ({ code, phase, message }));
-        expect(hookErrors).toEqual([
-          {
-            code: 'HOOK_FAILED',
-            phase: 'beforeAll',
-            message: expect.stringContaining('"gadget" is a test fixture on target "fake"'),
-          },
-        ]);
+        expect(outcome.report.run.errors).toEqual([]);
         expect(log.lines()).toEqual([
           'setup:database:fake:1',
           'beforeAll:fake:1',
           'setup:page:1',
           'body:first:page-1:1',
           'teardown:page',
-          'setup:page:1',
+          // `page` is set up for the test that names it, and for no other.
           'body:fails',
-          'teardown:page',
           // The failure discards the suite instance; the next test enters a fresh one, on the same database.
           'afterAll:1',
           'beforeAll:fake:1',
-          'setup:page:1',
           'body:after:1',
-          'teardown:page',
           'afterAll:1',
-          'beforeAll:gadget',
           'teardown:database',
         ]);
       } finally {

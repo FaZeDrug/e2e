@@ -176,8 +176,9 @@ run only in a browser, so a test that uses it declares
 | `beforeEach`, `afterEach`, `beforeAll`, `afterAll` | the same, with no title; `beforeAll` and `afterAll` get worker fixtures, not `browser`, `app`, or `screen` |
 | `test.describe.skip`, `test.describe.serial`, `describe.configure({ mode: 'serial', retries, timeout })` | `test.describe(title, { skip, serial, retries, timeout }, fn)` |
 | `{ tag: '@smoke' }` | `{ tags: ['smoke'] }` on a test or group |
-| `test.extend({ fixture })` | the same shape; a fixture that needs another goes in a chained `extend` |
+| `test.extend({ fixture })` | the same shape, set up on demand: a test, a hook, or a fixture gets the fixtures it names in its first parameter |
 | `[fn, { scope: 'worker' }]` fixtures | the same, typed with the second type argument of `extend` |
+| `[fn, { auto: true }]` fixtures | the same, in either scope |
 
 </Accordion>
 <Accordion title="CLI">
@@ -230,7 +231,7 @@ export const test = base.extend<{ accountPage: AccountPage }>({
 });
 ```
 
-A fixture that reads `browser` makes every test on that `test` web only, see
+A fixture that names `browser` makes every test that uses it web only, see
 [Keep it portable](/page-object-model#keep-it-portable). Drop `newPage()` and
 `page.close()` from the hooks: every attempt starts in a fresh context.
 
@@ -287,7 +288,7 @@ purpose. Use the workaround, or keep the test in Playwright.
 | `test.step()`, `testInfo.attach()` | Each call is already a named step in the report; `app.screenshot(label)` attaches a screenshot |
 | `test.info()`, `testInfo` in hooks and fixtures, `annotations` | Your own fixture or module state; an issue id in the title or a tag |
 | `fullyParallel`, `describe.configure({ mode: 'parallel' })` | Split the file. Files run in parallel, a file's tests in order |
-| On-demand and `{ auto: true }` fixtures; `mergeTests()` | One `test` for each fixture set; `beforeAll` for per-file setup |
+| `mergeTests()` | One chain of `extend` calls |
 | `globalSetup`, `globalTeardown`, a `webServer` array | A script around the run, or one `app.command` that starts every process |
 | `projects[].testMatch`, `testDir`, `testIgnore`, `grep` | `platforms` or tags on the tests, or one run for each target |
 | `--ui`, `npx playwright show-report`, `--reporter html` | `--watch --headed`; open `.e2e/report.html`, which `htmlReporter()` writes |

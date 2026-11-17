@@ -1,0 +1,191 @@
+/**
+ * Which fixtures a function names: the properties its first parameter
+ * destructures, read from the function's source the way Playwright and
+ * Vitest read them. A test body, a hook, and a fixture function each say
+ * what they use this way, so the runner sets up those fixtures and no others.
+ */
+
+import { CollectionError } from '@e2e-dev/core/lib/internal/errors';
+import { projectRelativePath, type SourceLocation } from '@e2e-dev/core/lib/internal/source';
+
+/** Any function that receives fixtures as its first argument. */
+export type FixtureUserFn = (...args: never[]) => unknown;
+
+/**
+ * A fixture rule broken by code declared at a known line. `declaredAt` is
+ * absolute; whoever knows the project root puts it in front of the message
+ * (`declarationSite`).
+ */
+export class FixtureUseError extends CollectionError {
+  constructor(
+    message: string,
+    readonly declaredAt: SourceLocation | undefined,
+  ) {
+    super(message);
+    this.name = 'FixtureUseError';
+  }
+}
+
+/**
+ * Where the code a collection error is about was declared, as the message
+ * names it: `tests/support.ts:12`, relative to the project root. `file` when
+ * the error carries no line, or one outside the project. Read structurally: a
+ * test file may load a second copy of this module.
+ */
+export function declarationSite(cause: unknown, projectRoot: string, file: string): string {
+  const site = (cause as { declaredAt?: Partial<SourceLocation> } | null)?.declaredAt;
+  if (typeof site?.file !== 'string' || typeof site.line !== 'number') return file;
+  const relative = projectRelativePath(projectRoot, site.file);
+  return relative === undefined ? file : `${relative}:${site.line}`;
+}
+
+const QUOTES = new Set(['"', "'", '`']);
+const CLOSERS: Readonly<Record<string, string>> = { '(': ')', '[': ']', '{': '}' };
+const WORD = /[\p{ID_Continue}$#‌‍]/u;
+
+/** The index of the first character at or after `at` that is neither whitespace nor inside a comment. */
+function skipTrivia(text: string, at: number): number {
+  let index = at;
+  while (index < text.length) {
+    if (/\s/.test(text[index]!)) index += 1;
+    else if (text.startsWith('//', index)) {
+      const end = text.indexOf('\n', index);
+      index = end === -1 ? text.length : end + 1;
+    } else if (text.startsWith('/*', index)) {
+      const end = text.indexOf('*/', index + 2);
+      index = end === -1 ? text.length : end + 2;
+    } else break;
+  }
+  return index;
+}
+
+/** The index after the string or template literal that opens at `at`. */
+function skipQuoted(text: string, at: number): number {
+  const quote = text[at]!;
+  let index = at + 1;
+  while (index < text.length) {
+    const char = text[index]!;
+    if (char === '\\') index += 2;
+    else if (char === quote) return index + 1;
+    else if (quote === '`' && text.startsWith('${', index)) index = skipGroup(text, index + 1);
+    else index += 1;
+  }
+  return index;
+}
+
+/** The index after the bracket group that opens at `at`; nested groups, strings, and comments are stepped over. */
+function skipGroup(text: string, at: number): number {
+  const closer = CLOSERS[text[at]!]!;
+  let index = at + 1;
+  while (index < text.length) {
+    index = skipTrivia(text, index);
+    const char = text[index];
+    if (char === undefined) break;
+    if (char === closer) return index + 1;
+    if (QUOTES.has(char)) index = skipQuoted(text, index);
+    else if (char in CLOSERS) index = skipGroup(text, index);
+    else index += 1;
+  }
+  return index;
+}
+
+/** `text` split at its top-level commas, comments dropped, each piece trimmed; empty pieces are left out. */
+function splitTopLevel(text: string): string[] {
+  const pieces: string[] = [];
+  let piece = '';
+  let index = 0;
+  while (index < text.length) {
+    const next = skipTrivia(text, index);
+    // A comment separates tokens the way the whitespace around it does.
+    if (next > index) piece += ' ';
+    const char = text[next];
+    if (char === undefined) break;
+    if (char === ',') {
+      pieces.push(piece);
+      piece = '';
+      index = next + 1;
+      continue;
+    }
+    const end = QUOTES.has(char) ? skipQuoted(text, next) : char in CLOSERS ? skipGroup(text, next) : next + 1;
+    piece += text.slice(next, end);
+    index = end;
+  }
+  pieces.push(piece);
+  return pieces.map((each) => each.trim()).filter((each) => each !== '');
+}
+
+/**
+ * The first parameter of a function, as written: `{ app, screen }`. Undefined
+ * for a function that takes none, and for source with no parameter list to
+ * read (a bound or native function prints `[native code]`).
+ */
+function firstParameter(source: string): string | undefined {
+  let index = skipTrivia(source, 0);
+  while (index < source.length) {
+    const char = source[index]!;
+    if (char === '(') return splitTopLevel(source.slice(index + 1, skipGroup(source, index) - 1))[0];
+    // A method's name may be computed or quoted: `['a b']({ app }) {}`.
+    if (char === '[') index = skipGroup(source, index);
+    else if (QUOTES.has(char)) index = skipQuoted(source, index);
+    else if (char === '*') index += 1;
+    else if (WORD.test(char)) {
+      let end = index;
+      while (end < source.length && WORD.test(source[end]!)) end += 1;
+      const after = skipTrivia(source, end);
+      // An arrow function with one bare parameter has no parentheses: `fixtures => {}`.
+      if (source.startsWith('=>', after)) return source.slice(index, end);
+      index = end;
+    } else return undefined;
+    index = skipTrivia(source, index);
+  }
+  return undefined;
+}
+
+/** The name one property of a destructuring pattern reads: `a`, `a: b`, `a = 1`, `'a': b`, `a: { nested }`. */
+function propertyName(property: string): string {
+  if (QUOTES.has(property[0]!)) return property.slice(1, skipQuoted(property, 0) - 1);
+  return /^[^\s:=]+/u.exec(property)?.[0] ?? property;
+}
+
+const WHY = 'e2e sets up only the fixtures a function names there';
+
+function parse(fn: FixtureUserFn, what: string): { readonly names: readonly string[] } | { readonly problem: string } {
+  const parameter = firstParameter(Function.prototype.toString.call(fn));
+  if (parameter === undefined) return { names: [] };
+  if (!parameter.startsWith('{')) {
+    const shown = parameter.length > 40 ? `${parameter.slice(0, 40)}...` : parameter;
+    return {
+      problem: `${what} must destructure its first parameter, as in ({ app, screen }) => {}; it takes "${shown}". ${WHY}`,
+    };
+  }
+  const names: string[] = [];
+  for (const property of splitTopLevel(parameter.slice(1, skipGroup(parameter, 0) - 1))) {
+    if (property.startsWith('...')) {
+      return { problem: `${what} takes the rest property "${property}" in its first parameter; list the fixtures it uses by name. ${WHY}` };
+    }
+    if (property.startsWith('[')) {
+      return { problem: `${what} takes the computed property "${property}" in its first parameter; write the fixture's name. ${WHY}` };
+    }
+    names.push(propertyName(property));
+  }
+  return { names: [...new Set(names)] };
+}
+
+const parsed = new WeakMap<FixtureUserFn, readonly string[]>();
+
+/**
+ * The fixtures `fn` names in its first parameter, parsed once per function. A
+ * function with no parameter names none. One that takes the whole fixture
+ * object (`(fixtures) => {}`), a rest property (`{ app, ...rest }`), or a
+ * computed property fails with a `COLLECTION_ERROR` that opens with `what`
+ * (`test "signs in"`, `beforeEach hook`, `fixture "database"`) and carries
+ * `source`, the line the function was registered at.
+ */
+export function fixtureNames(fn: FixtureUserFn, what: string, source?: SourceLocation): readonly string[] {
+  const known = parsed.get(fn);
+  if (known !== undefined) return known;
+  const result = parse(fn, what);
+  if ('problem' in result) throw new FixtureUseError(result.problem, source);
+  parsed.set(fn, result.names);
+  return result.names;
+}

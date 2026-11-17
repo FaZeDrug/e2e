@@ -21,8 +21,9 @@ const BUILDS: Readonly<Record<string, string | undefined>> = {
  * `build`: installs the platform's build on this worker's device before its
  * first test, and nothing when the run names none (the app is already on the
  * device). A worker fixture, so it runs once per worker, which is one per
- * device. The engine installs nothing on its own, so this is where the suite
- * says it; the step shows in the first test's report.
+ * device, and `auto`, since no test names it: it is there for the install.
+ * The engine installs nothing on its own, so this is where the suite says
+ * it; the step shows in the first test's report.
  */
 export const test = base.extend<{}, { build: undefined }>({
   build: [
@@ -31,7 +32,7 @@ export const test = base.extend<{}, { build: undefined }>({
       if (build !== undefined) await device.installApp(build);
       await use(undefined);
     },
-    { scope: 'worker' },
+    { scope: 'worker', auto: true },
   ],
 });
 
