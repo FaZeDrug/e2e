@@ -88,6 +88,31 @@ async function screenRootOf(h: Harness): Promise<SemanticNode> {
   return (await h.engine.observe!(operation())).root;
 }
 
+/**
+ * agent-device's ref admission: every capture starts a new generation, and
+ * a ref pinned with `~s<generation>` is refused unless it names the newest.
+ */
+function generations(h: Harness, nodes: () => readonly RawNode[] = () => SETTINGS_NODES, truncated: () => boolean = () => false): void {
+  let generation = 6;
+  h.fake.respond('capture.snapshot', () => {
+    generation += 1;
+    return { ...SETTINGS_SNAPSHOT, nodes: nodes(), refsGeneration: generation, truncated: truncated() };
+  });
+  const admit = (ref: string): void => {
+    const pinned = /~s(\d+)$/.exec(ref);
+    if (pinned !== null && Number(pinned[1]) !== generation) {
+      throw new AppError('COMMAND_FAILED', `Ref ${ref} was minted from a superseded snapshot generation`, { reason: 'ref_generation_mismatch', dispatched: 'no' });
+    }
+  };
+  h.fake.respond('interactions.press', (args) => admit((args as { ref: string }).ref));
+  h.fake.respond('interactions.fill', (args) => admit((args as { ref: string }).ref));
+  h.fake.respond('interactions.drag', (args) => {
+    const { source, destination } = args as { source: string; destination: string };
+    admit(source);
+    admit(destination);
+  });
+}
+
 describe('manifest', () => {
   it('declares observation, actions, location, artifacts, the device fixture, and session hooks', () => {
     const pinned = harness().engine;
@@ -1731,6 +1756,7 @@ describe('device fixture', () => {
 
     it('keeps its learned size isolated from the returned object and reads a new orientation', async () => {
       const h = harness();
+      h.fake.respond('capture.snapshot', () => ({ ...SETTINGS_SNAPSHOT, viewport: { width: 390, height: 844 } }));
       await openAttempt(h);
       const device = fixture(h);
       const portrait = await device.viewport();
@@ -1820,15 +1846,94 @@ describe('device fixture', () => {
       expect(await device.viewport()).toEqual({ width: 390, height: 844 });
     });
 
-    it('leaves references from the current observation usable', async () => {
+    it.each(['observation', 'locator'] as const)('keeps the %s reference usable after viewport captures advance its generation', async (source) => {
       const h = harness({ transition: 0 });
       await openAttempt(h);
-      const back = await observed(h, 'Back');
+      let nodes = SETTINGS_NODES;
+      generations(h, () => nodes);
+      const back = source === 'observation'
+        ? await observed(h, 'Back')
+        : (await h.engine.locate!(testIdQuery('BackButton'), operation()))[0]!;
+      nodes = SETTINGS_NODES.map((node) => node.ref === '@e3' ? { ...node, ref: '@e30' } : node);
+      const device = fixture(h);
+
+      await device.viewport();
+      await h.engine.perform!(back.ref, { kind: 'tap' }, { ...operation(), origin: 'test' });
+      expect(h.fake.lastArgs('interactions.press')).toEqual({ ref: '@e30~s8' });
+
+      await device.viewport();
+      await h.engine.perform!(back.ref, { kind: 'tap' }, { ...operation(), origin: 'test' });
+      expect(h.fake.lastArgs('interactions.press')).toEqual({ ref: '@e30~s9' });
+    });
+
+    it('keeps a field usable for a key press and fill after a viewport read', async () => {
+      const h = harness({ transition: 0 });
+      await openAttempt(h);
+      generations(h);
+      const search = await observed(h, 'Search');
+      const step = { ...operation(), origin: 'test' } as const;
 
       await fixture(h).viewport();
-      await h.engine.perform!(back.ref, { kind: 'tap' }, { ...operation(), origin: 'test' });
+      await h.engine.perform!(search.ref, { kind: 'press', key: 'x' }, step);
+      expect(h.fake.lastArgs('interactions.press')).toEqual({ ref: '@e7~s8' });
+      await h.engine.perform!(search.ref, { kind: 'fill', value: 'new search', sensitive: false }, step);
+      expect(h.fake.lastArgs('interactions.fill')).toEqual({ ref: '@e7~s9', text: 'new search' });
+    });
 
-      expect(h.fake.lastArgs('interactions.press')).toEqual({ ref: '@e3' });
+    it('does not revive a reference that was already stale before the viewport read', async () => {
+      const h = harness({ transition: 0 });
+      await openAttempt(h);
+      generations(h);
+      const back = await observed(h, 'Back');
+      await h.engine.locate!(testIdQuery('ABOUT'), operation());
+
+      await fixture(h).viewport();
+
+      await expect(h.engine.perform!(back.ref, { kind: 'tap' }, operation())).rejects.toMatchObject({ code: 'NODE_STALE' });
+      expect(h.fake.lastArgs('interactions.press')).toMatchObject({ ref: '@e3~s7' });
+    });
+
+    it('keeps the original input security facts when the viewport capture changes a field', async () => {
+      const h = harness({ transition: 0 });
+      await openAttempt(h);
+      let nodes = SETTINGS_NODES;
+      generations(h, () => nodes);
+      const search = await observed(h, 'Search');
+      nodes = SETTINGS_NODES.map((node) => node.ref === '@e7' ? { ...node, enabled: false } : node);
+
+      await fixture(h).viewport();
+
+      await expect(h.engine.perform!(search.ref, { kind: 'fill', value: 'text', sensitive: false }, { ...operation(), origin: 'test' }))
+        .rejects.toMatchObject({ code: 'NODE_STALE' });
+      expect(h.fake.methods()).not.toContain('interactions.fill');
+    });
+
+    it.each(['moved', 'missing'] as const)('leaves a %s node stale after the viewport read', async (change) => {
+      const h = harness({ transition: 0 });
+      await openAttempt(h);
+      let nodes = SETTINGS_NODES;
+      generations(h, () => nodes);
+      const back = await observed(h, 'Back');
+      nodes = change === 'missing'
+        ? SETTINGS_NODES.filter((node) => node.ref !== '@e3')
+        : SETTINGS_NODES.map((node) => node.ref === '@e3' ? { ...node, rect: { ...node.rect!, y: 100 } } : node);
+
+      await fixture(h).viewport();
+
+      await expect(h.engine.perform!(back.ref, { kind: 'tap' }, operation())).rejects.toMatchObject({ code: 'NODE_STALE' });
+    });
+
+    it('does not refresh references from an incomplete viewport capture', async () => {
+      const h = harness({ transition: 0 });
+      await openAttempt(h);
+      let truncated = false;
+      generations(h, () => SETTINGS_NODES, () => truncated);
+      const back = await observed(h, 'Back');
+      truncated = true;
+
+      expect(await fixture(h).viewport()).toEqual({ width: 390, height: 844 });
+
+      await expect(h.engine.perform!(back.ref, { kind: 'tap' }, operation())).rejects.toMatchObject({ code: 'NODE_STALE' });
     });
 
     it('does not start a new transition wait for controls that appear after the read', async () => {
@@ -2810,30 +2915,6 @@ describe('reference lifetime and cancellation', () => {
 });
 
 describe('snapshot generations', () => {
-  /**
-   * agent-device's ref admission: every capture starts a new generation, and
-   * a ref pinned with `~s<generation>` is refused unless it names the newest.
-   */
-  function generations(h: Harness, nodes: () => readonly RawNode[] = () => SETTINGS_NODES): void {
-    let generation = 6;
-    h.fake.respond('capture.snapshot', () => {
-      generation += 1;
-      return { ...SETTINGS_SNAPSHOT, nodes: nodes(), refsGeneration: generation };
-    });
-    const admit = (ref: string): void => {
-      const pinned = /~s(\d+)$/.exec(ref);
-      if (pinned !== null && Number(pinned[1]) !== generation) {
-        throw new AppError('COMMAND_FAILED', `Ref ${ref} was minted from a superseded snapshot generation`, { reason: 'ref_generation_mismatch', dispatched: 'no' });
-      }
-    };
-    h.fake.respond('interactions.press', (args) => admit((args as { ref: string }).ref));
-    h.fake.respond('interactions.drag', (args) => {
-      const { source, destination } = args as { source: string; destination: string };
-      admit(source);
-      admit(destination);
-    });
-  }
-
   it('pins every ref action to the capture that issued its ref', async () => {
     const h = harness();
     await openAttempt(h);

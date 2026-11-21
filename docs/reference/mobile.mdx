@@ -928,8 +928,10 @@ const { name, bundleId } = await device.foregroundApp();
 viewport(): Promise<ViewportSize>;
 ```
 
-Returns `{ width, height }` for the current orientation. These logical
-dimensions use the same coordinate space as `screen.tapAt()` and node bounds.
+Returns `{ width, height }` for the current orientation, in the same
+coordinate space as `screen.tapAt()`. If the device cannot determine the
+window's position on the screen, node bounds may be relative to that window.
+Do not derive screen points from those bounds.
 
 ```ts
 const { width, height } = await device.viewport();
