@@ -452,6 +452,9 @@ export default {
   `setPermission`, `setNetwork`, `setAppearance`, `clearKeychain`, `fold`
   for a foldable's hinge (iPhone Duo, Android foldable emulators), `locator`, more). Portable suites declare
   `requires: ['device']`.
+- `device.viewport()` returns `{ width, height }` in CSS pixels for the
+  current orientation, in the same coordinate space as `screen.tapAt()`.
+  It fails with `ENGINE_FAILURE` when the device reports no usable geometry.
 - `device.unstable_raw` gives the session name, device id and name, a
   `selection` to spread into a call, and a
   raw driver `client` bound to the test's session, for what `device`

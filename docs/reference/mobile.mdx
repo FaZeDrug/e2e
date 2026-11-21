@@ -453,6 +453,7 @@ test('offline banner', { platforms: ['android'] }, async ({ app, device, screen 
 | [`closeApp`](#closeapp) | `Promise<void>` |
 | [`clearKeychain`](#clearkeychain) | `Promise<void>` |
 | [`foregroundApp`](#foregroundapp) | `Promise<ForegroundApp>` |
+| [`viewport`](#viewport) | `Promise<ViewportSize>` |
 | [`home`](#home) | `Promise<void>` |
 | [`back`](#back) | `Promise<void>` |
 | [`alert`](#alert) | `Promise<void>` |
@@ -919,6 +920,25 @@ const { name, bundleId } = await device.foregroundApp();
 | Throws | When |
 | --- | --- |
 | `APP_NOT_OPEN` | `closeApp` ended the session. |
+
+#### `viewport`
+
+```ts
+/** Reads the device's viewport in CSS pixels. */
+viewport(): Promise<ViewportSize>;
+```
+
+Returns `{ width, height }` for the current orientation. These logical
+dimensions use the same coordinate space as `screen.tapAt()` and node bounds.
+
+```ts
+const { width, height } = await device.viewport();
+await screen.tapAt({ x: width / 2, y: height / 2 });
+```
+
+| Throws | When |
+| --- | --- |
+| `ENGINE_FAILURE` | The device reports no geometry from which to determine its viewport. |
 
 #### `home`
 

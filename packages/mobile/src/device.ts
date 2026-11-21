@@ -6,7 +6,7 @@
  */
 
 import type { AgentDeviceClient as DeviceSessionClient } from 'agent-device';
-import type { EngineFixtureContext, Locator } from '@e2e-dev/core/engine';
+import type { EngineFixtureContext, Locator, ViewportSize } from '@e2e-dev/core/engine';
 import { appLabel, linkLabel, linkTarget } from './links.ts';
 import type { DevicePermission, MobilePlatform, PermissionState } from './options.ts';
 import type { DeviceSelection } from './pool.ts';
@@ -97,6 +97,8 @@ export interface Device {
   setAppearance(mode: 'light' | 'dark'): Promise<void>;
   /** Rotates the device. */
   setOrientation(orientation: DeviceOrientation): Promise<void>;
+  /** Reads the current screen size in CSS pixels, in the same coordinate space as screen taps. */
+  viewport(): Promise<ViewportSize>;
   /**
    * Puts a foldable simulator or emulator in a hinge pose. On the iPhone Duo
    * it resolves once agent-device reads the angle back from CoreDevice at
@@ -295,6 +297,10 @@ export function createDeviceFixture(surface: AgentDeviceSurface, context: Engine
     async setOrientation(orientation) {
       await surface.screenCommand('device.setOrientation', (client) => client.command.orientation({ ...surface.selection(), orientation }), context.signal);
     },
+    async viewport() {
+      const operation = context.operation();
+      return surface.viewport(operation, surface.inputBudget('device.viewport', operation));
+    },
     async fold(pose) {
       await surface.fold(pose, context.signal);
     },
@@ -377,6 +383,7 @@ export function createDeviceFixture(surface: AgentDeviceSurface, context: Engine
     clearLocation: action,
     setAppearance: { ...action, label: (mode) => mode },
     setOrientation: { ...action, label: (orientation) => orientation },
+    viewport: action,
     fold: { ...action, label: (pose) => pose },
     setBiometrics: action,
     enrollBiometrics: action,

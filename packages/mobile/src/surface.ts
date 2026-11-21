@@ -1240,6 +1240,14 @@ export class AgentDeviceSurface {
     return logicalScreenSize(result);
   }
 
+  /** Reads the logical screen size without replacing the current observation's node bindings. */
+  async viewport(operation: OperationContext, budget: InputBudget): Promise<ViewportSize> {
+    const raw = await this.snapshotOrEmpty(operation, this.interactiveSnapshots, budget);
+    const projected = this.project(raw);
+    const { width, height } = await this.viewportFor(projected, operation.signal, budget);
+    return { width, height };
+  }
+
   async observe(operation: OperationContext, options: EngineObserveOptions | undefined, budget: InputBudget): Promise<EngineSnapshot> {
     const raw = await this.snapshotOrEmpty(operation, this.interactiveSnapshots, budget);
     const projected = this.project(raw);
