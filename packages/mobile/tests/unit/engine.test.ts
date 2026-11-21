@@ -1762,25 +1762,29 @@ describe('device fixture', () => {
       const portrait = await device.viewport();
       expect(portrait).toEqual({ width: 390, height: 844 });
       Object.assign(portrait, { width: 1, height: 1 });
+      const screenshotsBeforeRotation = h.fake.methods().filter((method) => method === 'capture.screenshot').length;
+      await device.setOrientation('landscape-left');
       h.fake.respond('capture.snapshot', () => ({ nodes: [] }));
       expect(await device.viewport()).toEqual({ width: 390, height: 844 });
 
-      await device.setOrientation('landscape-left');
       h.fake.respond('capture.snapshot', () => ({ ...SETTINGS_SNAPSHOT, viewport: { width: 844, height: 390 } }));
       expect(await device.viewport()).toEqual({ width: 844, height: 390 });
-      expect(h.fake.methods()).not.toContain('capture.screenshot');
+      expect(h.fake.methods().filter((method) => method === 'capture.screenshot')).toHaveLength(screenshotsBeforeRotation);
     });
 
     it.each([
       { logicalWidth: 390, logicalHeight: 844, width: 1170, height: 2532, pixelDensity: 3 },
       { width: 1170, height: 2532, pixelDensity: 3 },
-    ])('falls back to logical screenshot dimensions for a screen without bounds: %j', async (screenshot) => {
+    ])('reuses logical screenshot dimensions when landscape snapshots have no bounds: %j', async (screenshot) => {
       const h = harness({}, false);
       h.fake.respond('capture.snapshot', () => ({ nodes: [] }));
       h.fake.respond('capture.screenshot', () => screenshot);
       await openAttempt(h);
+      const device = fixture(h);
+      await device.setOrientation('landscape-left');
 
-      expect(await fixture(h).viewport()).toEqual({ width: 390, height: 844 });
+      expect(await device.viewport()).toEqual({ width: 390, height: 844 });
+      expect(await device.viewport()).toEqual({ width: 390, height: 844 });
       expect(h.fake.methods().filter((method) => method === 'capture.screenshot')).toHaveLength(1);
     });
 

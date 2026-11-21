@@ -928,10 +928,17 @@ const { name, bundleId } = await device.foregroundApp();
 viewport(): Promise<ViewportSize>;
 ```
 
-Returns `{ width, height }` for the current orientation, in the same
-coordinate space as `screen.tapAt()`. If the device cannot determine the
-window's position on the screen, node bounds may be relative to that window.
-Do not derive screen points from those bounds.
+Returns `{ width, height }` in CSS pixels, in the same coordinate space as
+`screen.tapAt()`. Each call reads a fresh snapshot. Rotation updates depend
+on that snapshot providing the screen's updated geometry.
+
+Without geometry, it reuses the last known size. If no size is known, it
+reads logical screenshot dimensions, which may remain portrait-sized in
+landscape. These fallbacks may not reflect a recent rotation.
+
+If the device cannot determine the window's position on the screen, node
+bounds may be relative to that window. Do not derive screen points from
+those bounds.
 
 ```ts
 const { width, height } = await device.viewport();
@@ -940,7 +947,7 @@ await screen.tapAt({ x: width / 2, y: height / 2 });
 
 | Throws | When |
 | --- | --- |
-| `ENGINE_FAILURE` | The device reports no geometry from which to determine its viewport. |
+| `ENGINE_FAILURE` | No snapshot geometry, previously known size, or logical screenshot dimensions are available. |
 
 #### `home`
 
