@@ -452,13 +452,7 @@ export default {
   `setPermission`, `setNetwork`, `setAppearance`, `clearKeychain`, `fold`
   for a foldable's hinge (iPhone Duo, Android foldable emulators), `locator`, more). Portable suites declare
   `requires: ['device']`.
-- `device.viewport()` returns `{ width, height }` in CSS pixels, in the
-  same coordinate space as `screen.tapAt()`. Rotation updates need fresh
-  screen geometry. Without it, the getter reuses the last known size or,
-  if none is known, logical screenshot dimensions. Screenshot dimensions
-  may remain portrait-sized in landscape, so these fallbacks may not
-  reflect a recent rotation. It fails with `ENGINE_FAILURE` when none of
-  these sources establishes a size.
+- `device.viewport()` reads `{ width, height }` fresh on each call, in the coordinate space of `screen.tapAt()`.
 - `device.unstable_raw` gives the session name, device id and name, a
   `selection` to spread into a call, and a
   raw driver `client` bound to the test's session, for what `device`

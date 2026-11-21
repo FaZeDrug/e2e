@@ -1,7 +1,7 @@
 /** Compile-time assertions for the handle `mobile()` returns: named by this package, accepted wherever an engine handle is. */
-import type { EngineHandle, ViewportSize } from '@e2e-dev/core/engine';
-import { mobile, type Device, type MobileEngine, type MobileFixtures } from '../../src/index.ts';
-import type { Device as EntryDevice, MobileEngine as EntryMobileEngine } from '../../src/engine-entry.ts';
+import type { EngineHandle, ViewportSize as CoreViewportSize } from '@e2e-dev/core/engine';
+import { mobile, type Device, type MobileEngine, type MobileFixtures, type ViewportSize } from '../../src/index.ts';
+import type { Device as EntryDevice, MobileEngine as EntryMobileEngine, ViewportSize as EntryViewportSize } from '../../src/engine-entry.ts';
 
 void (mobile({ platform: 'ios' }) satisfies MobileEngine);
 void (mobile({ platform: 'ios' }) satisfies EngineHandle<MobileFixtures>);
@@ -18,6 +18,8 @@ void (fixtures.device.viewport() satisfies Promise<ViewportSize>);
 
 type Exact<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 void (true satisfies Exact<ReturnType<Device['viewport']>, Promise<ViewportSize>>);
+void (true satisfies Exact<ViewportSize, CoreViewportSize>);
+void (true satisfies Exact<EntryViewportSize, ViewportSize>);
 declare const viewport: Awaited<ReturnType<Device['viewport']>>;
 void (viewport.width satisfies number);
 void (viewport.height satisfies number);

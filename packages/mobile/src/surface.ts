@@ -1240,34 +1240,12 @@ export class AgentDeviceSurface {
     return logicalScreenSize(result);
   }
 
-  /** Reads the logical screen size while preserving unchanged node references from the current capture. */
+  /** Reads the screen size in the coordinate space of screen taps. */
   async viewport(operation: OperationContext, budget: InputBudget): Promise<ViewportSize> {
-    const previous = this.latestScreen;
     const raw = await this.snapshotOrEmpty(operation, this.interactiveSnapshots, budget);
     const projected = this.project(raw);
-    if (!isTruncated(raw)) this.rebindViewportNodes(previous, projected);
     const { width, height } = await this.viewportFor(projected, operation.signal, budget);
     return { width, height };
-  }
-
-  /** Refreshes only unchanged bindings from the capture a viewport read superseded, preserving earlier stale refs and input authorization facts. */
-  private rebindViewportNodes(previous: ProjectedScreen | undefined, projected: ProjectedScreen): void {
-    const previousGeneration = previous?.refsGeneration;
-    if (previousGeneration === undefined || projected.refsGeneration === undefined || previousGeneration === projected.refsGeneration) return;
-    for (const bindings of [this.generation, this.located]) {
-      for (const [id, entry] of bindings) {
-        if (entry.refsGeneration !== previousGeneration) continue;
-        const found = this.samePlace(entry, projected.index);
-        if (found === undefined) continue;
-        const next = this.bind(found, projected);
-        if (entry.node.inputPurpose !== next.node.inputPurpose ||
-          entry.node.states?.disabled !== next.node.states?.disabled ||
-          entry.node.states?.secure !== next.node.states?.secure ||
-          entry.node.states?.hidden !== next.node.states?.hidden ||
-          entry.takesText !== next.takesText) continue;
-        bindings.set(id, { ...next, id: entry.id, node: { ...next.node, ref: entry.node.ref } });
-      }
-    }
   }
 
   async observe(operation: OperationContext, options: EngineObserveOptions | undefined, budget: InputBudget): Promise<EngineSnapshot> {

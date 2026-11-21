@@ -97,12 +97,7 @@ export interface Device {
   setAppearance(mode: 'light' | 'dark'): Promise<void>;
   /** Rotates the device. */
   setOrientation(orientation: DeviceOrientation): Promise<void>;
-  /**
-   * Reads screen size in CSS pixels, in the same coordinate space as screen
-   * taps. Rotation updates depend on fresh screen geometry. Without it,
-   * reuses the last known size or reads logical screenshot dimensions,
-   * which may remain portrait-sized in landscape.
-   */
+  /** Reads the screen size in the coordinate space of screen taps. */
   viewport(): Promise<ViewportSize>;
   /**
    * Puts a foldable simulator or emulator in a hinge pose. On the iPhone Duo
